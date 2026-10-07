@@ -1,0 +1,26 @@
+chrome.runtime.onMessage.addListener((message) => {
+  if (message?.type !== "blueguard-warning" || !message.warning) return;
+  document.getElementById("blueguard-warning")?.remove();
+  const root = document.createElement("div");
+  root.id = "blueguard-warning";
+  root.setAttribute("role", "alert");
+  root.style.cssText = "position:fixed;z-index:2147483647;top:12px;left:12px;right:12px;max-width:720px;margin:auto;background:#fff;color:#1f2937;border:2px solid #d6383a;border-radius:6px;box-shadow:0 12px 36px #0004;padding:16px 18px;font:14px/1.45 system-ui,sans-serif";
+  const heading = document.createElement("strong");
+  heading.textContent = "Bluely warning: suspected unsafe site";
+  heading.style.cssText = "display:block;font-size:16px;color:#a3262b;margin-bottom:4px";
+  const detail = document.createElement("span");
+  detail.textContent = `${message.warning.host} may be associated with ${message.warning.threats.join(", ").toLowerCase().replaceAll("_", " ")}. Avoid entering information on this page.`;
+  const attribution = document.createElement("a");
+  attribution.href = "https://developers.google.com/safe-browsing/v4/advisory";
+  attribution.target = "_blank";
+  attribution.rel = "noopener noreferrer";
+  attribution.textContent = "Advisory provided by Google";
+  attribution.style.cssText = "display:block;margin-top:10px;color:#125a87;font-size:12px";
+  const dismiss = document.createElement("button");
+  dismiss.type = "button";
+  dismiss.textContent = "Dismiss";
+  dismiss.style.cssText = "display:block;margin-top:12px;padding:6px 10px;background:#1f2937;color:#fff;border:0;border-radius:4px;cursor:pointer";
+  dismiss.addEventListener("click", () => root.remove());
+  root.append(heading, detail, attribution, dismiss);
+  document.documentElement.append(root);
+});

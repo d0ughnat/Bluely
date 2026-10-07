@@ -1,0 +1,7 @@
+Metadata-Version: 2.4
+Name: bluely-agent
+Version: 0.1.0
+Summary: Local-first Bluely security agent
+Requires-Python: >=3.11
+Requires-Dist: keyring<27,>=25
+Requires-Dist: secretstorage<4,>=3.3

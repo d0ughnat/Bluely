@@ -1,0 +1,2 @@
+keyring<27,>=25
+secretstorage<4,>=3.3

@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bluely-agent"
+version = "0.1.0"
+description = "Local-first Bluely security agent"
+requires-python = ">=3.11"
+dependencies = ["keyring>=25,<27", "secretstorage>=3.3,<4"]
+
+[project.scripts]
+blueguard = "blueguard.cli:main"
+bluely = "blueguard.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["agent"]
+
+[tool.setuptools.package-data]
+blueguard = ["rules/*.yar"]
+
+[tool.pytest.ini_options]
+pythonpath = ["agent"]
+testpaths = ["tests"]

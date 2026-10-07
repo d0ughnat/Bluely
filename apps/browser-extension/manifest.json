@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "Bluely",
+  "description": "Local-first browser warnings and download scanning",
+  "version": "0.1.0",
+  "permissions": ["nativeMessaging", "downloads", "webNavigation", "tabs", "storage"],
+  "host_permissions": ["http://*/*", "https://*/*"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    { "matches": ["http://*/*", "https://*/*"], "js": ["content.js"], "run_at": "document_idle" }
+  ],
+  "action": { "default_title": "Bluely", "default_popup": "popup.html" }
+}

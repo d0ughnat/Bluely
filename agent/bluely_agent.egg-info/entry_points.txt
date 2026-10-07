@@ -1,0 +1,3 @@
+[console_scripts]
+blueguard = blueguard.cli:main
+bluely = blueguard.cli:main
