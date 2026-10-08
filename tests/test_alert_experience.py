@@ -17,14 +17,16 @@ class AlertExperienceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             store = Store(Path(temp) / "alerts.sqlite3")
             try:
-                first = store.add_event("email", "first", 50, "suspicious", [])
-                self.assertEqual(store.unread_alert_count(), 1)
-                self.assertEqual(store.mark_alerts_seen(first["created_at"]), 0)
-                self.assertEqual(store.get_event(first["id"])["status"], "open")
-                self.assertEqual(store.unread_alert_count(), 0)
-                second = store.add_event("email", "second", 60, "suspicious", [])
-                self.assertEqual(store.unread_alert_count(), 1)
-                self.assertEqual(store.mark_alerts_seen(second["created_at"]), 0)
+                with patch("blueguard.storage.now", return_value="2026-01-01T00:00:00+00:00"):
+                    first = store.add_event("email", "first", 50, "suspicious", [])
+                    self.assertEqual(store.unread_alert_count(), 1)
+                    self.assertEqual(store.mark_alerts_seen(first["created_at"]), 0)
+                    self.assertEqual(store.get_event(first["id"])["status"], "open")
+                    self.assertEqual(store.unread_alert_count(), 0)
+                    second = store.add_event("email", "second", 60, "suspicious", [])
+                    self.assertGreater(second["created_at"], first["created_at"])
+                    self.assertEqual(store.unread_alert_count(), 1)
+                    self.assertEqual(store.mark_alerts_seen(second["created_at"]), 0)
             finally:
                 store.close()
             reopened = Store(Path(temp) / "alerts.sqlite3")

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -79,10 +79,14 @@ class Store:
                   explanation: str = "", model_used: str = "") -> dict:
         event_id = str(uuid4())
         with self._lock:
+            created_at = now()
+            latest = self.db.execute("SELECT MAX(created_at) FROM events").fetchone()[0]
+            if latest and created_at <= latest:
+                created_at = (datetime.fromisoformat(latest) + timedelta(microseconds=1)).isoformat()
             self.db.execute("""INSERT OR IGNORE INTO events
                 (id, created_at, kind, subject, risk, verdict, evidence,
                  explanation, model_used, source_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (event_id, now(), kind, subject[:300], risk, verdict,
+                (event_id, created_at, kind, subject[:300], risk, verdict,
                  json.dumps(evidence), explanation[:2000], model_used, source_key))
             self.db.commit()
             if source_key:
