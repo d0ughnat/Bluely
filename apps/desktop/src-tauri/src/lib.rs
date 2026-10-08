@@ -39,7 +39,7 @@ fn exchange_with_agent(request: &Value, method: &str) -> Result<String, String> 
         });
     let mut stream = UnixStream::connect(socket)
         .map_err(|_| "Bluely agent is unavailable. Run bluely setup.".to_string())?;
-    let read_timeout = if method == "model_test" { 75 } else { 25 };
+    let read_timeout = if method == "model_test" { 135 } else { 25 };
     stream
         .set_read_timeout(Some(Duration::from_secs(read_timeout)))
         .map_err(|e| e.to_string())?;

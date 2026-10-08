@@ -2,6 +2,11 @@ from __future__ import annotations
 
 import json
 import re
+import os
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from . import secrets
@@ -16,7 +21,7 @@ SYSTEM_PROMPT = (
     "Do not repeat raw JSON, propose tool calls, change the risk score, or claim that a scan "
     "was performed when evidence is absent. Return only a JSON object with one string field named reply."
 )
-CLOUD_PROVIDERS = {"huggingface", "openai", "anthropic"}
+CLOUD_PROVIDERS = {"huggingface", "openai", "anthropic", "codex"}
 SAFE_CODES = {"clamav_detected", "defender_detected", "yara_high_confidence", "known_malicious_url",
               "yara_match", "reply_to_mismatch", "auth_fail", "display_link_mismatch",
               "credential_request", "suspicious_attachment", "scan_status", "tool_status", "sha256",
@@ -123,6 +128,92 @@ def _local_endpoint(endpoint: str) -> str:
     return endpoint.rstrip("/")
 
 
+def codex_status() -> dict:
+    executable = _codex_executable()
+    if not executable:
+        return {"installed": False, "connected": False, "message": "Install Codex CLI, then sign in with ChatGPT."}
+    try:
+        result = subprocess.run([executable, "login", "status"], capture_output=True,
+                                text=True, timeout=10, check=False,
+                                env=_codex_environment(executable))
+    except (OSError, subprocess.TimeoutExpired):
+        return {"installed": True, "connected": False, "message": "Could not check Codex sign-in."}
+    output = (result.stdout + " " + result.stderr).lower()
+    connected = result.returncode == 0 and "logged in using chatgpt" in output
+    return {"installed": True, "connected": connected,
+            "message": "ChatGPT subscription connected." if connected else
+                       "Run codex login and choose ChatGPT sign-in."}
+
+
+def _codex_executable() -> str | None:
+    executable = shutil.which("codex")
+    if executable:
+        return executable
+    if os.name == "nt":
+        appdata = os.environ.get("APPDATA")
+        candidates = [Path(appdata) / "npm" / "codex.cmd"] if appdata else []
+    else:
+        home = Path.home()
+        candidates = [home / ".local/bin/codex", home / ".npm-global/bin/codex",
+                      home / ".volta/bin/codex"]
+        nvm_versions = home / ".nvm/versions/node"
+        if nvm_versions.is_dir():
+            candidates.extend(sorted(nvm_versions.glob("*/bin/codex"), reverse=True))
+    for candidate in candidates:
+        if candidate.is_file() and (os.name == "nt" or os.access(candidate, os.X_OK)):
+            return str(candidate)
+    return None
+
+
+def _codex_environment(executable: str) -> dict[str, str]:
+    environment = os.environ.copy()
+    # User-installed Node and Codex may be absent from a systemd user's PATH.
+    environment["PATH"] = str(Path(executable).parent) + os.pathsep + environment.get("PATH", "")
+    # A subscription selection must never silently fall back to API billing.
+    for name in ("OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"):
+        environment.pop(name, None)
+    return environment
+
+
+def _codex_complete(system_prompt: str, content: str, model: str, max_tokens: int,
+                    response_schema: dict | None) -> str:
+    status = codex_status()
+    if not status["connected"]:
+        raise ValueError(status["message"])
+    executable = _codex_executable()
+    if not executable:
+        raise ValueError("Codex CLI is not installed")
+    # Run from an empty directory. The CLI receives only the supplied prompt and
+    # cannot modify files; no Bluely database or working directory is attached.
+    with tempfile.TemporaryDirectory(prefix="bluely-codex-") as directory:
+        schema_file = Path(directory) / "reply-schema.json"
+        answer_file = Path(directory) / "answer.json"
+        schema_file.write_text(json.dumps(response_schema or ASSISTANT_SCHEMA), encoding="utf-8")
+        command = [executable, "exec", "--ephemeral", "--ignore-user-config",
+                   "--skip-git-repo-check", "--sandbox", "read-only",
+                   "--disable", "shell_tool", "--disable", "apps",
+                   "--disable", "computer_use", "--disable", "browser_use",
+                   "--disable", "code_mode_host", "--disable", "multi_agent",
+                   "--disable", "hooks",
+                   "--output-schema", str(schema_file), "--output-last-message",
+                   str(answer_file)]
+        if model and model != "default":
+            command.extend(["--model", model])
+        command.append("-")
+        environment = _codex_environment(executable)
+        prompt = (f"{system_prompt}\n\nDo not use tools, commands, or local files. "
+                  f"Return JSON only, within {max_tokens} tokens.\n\nInput:\n{content}")
+        try:
+            result = subprocess.run(command, input=prompt, capture_output=True,
+                                    text=True, cwd=directory, env=environment,
+                                    timeout=120, check=False)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise RemoteError("Codex did not complete the request") from error
+        if result.returncode != 0 or not answer_file.is_file():
+            raise RemoteError("Codex request failed; check your sign-in and plan usage")
+        return answer_file.read_text(encoding="utf-8").strip()
+
+
 def _payload(kind: str, risk: int, verdict: str, evidence: list[dict],
              subject: str, cloud: bool) -> str:
     if cloud:
@@ -142,11 +233,13 @@ def _complete(settings: Settings, system_prompt: str, content: str,
               response_schema: dict | None = None) -> tuple[str, str]:
     provider = settings.model_provider
     model = settings.model_name.strip()
-    if not model:
+    if not model and provider != "codex":
         raise ValueError("A model name is required")
     messages = [{"role": "system", "content": system_prompt},
                 {"role": "user", "content": content}]
-    if provider == "ollama":
+    if provider == "codex":
+        answer = _codex_complete(system_prompt, content, model, max_tokens, response_schema)
+    elif provider == "ollama":
         url = _local_endpoint(settings.model_endpoint) + "/api/chat"
         body = {"model": model, "messages": messages, "stream": False, "think": False,
                 "options": {"num_predict": max_tokens}}
@@ -190,7 +283,7 @@ def explain(settings: Settings, kind: str, risk: int, verdict: str,
             evidence: list[dict], subject: str = "") -> tuple[str, str]:
     content = _payload(kind, risk, verdict, evidence, subject,
                        settings.model_provider in CLOUD_PROVIDERS)
-    structured = settings.model_provider in {"ollama", "llama_cpp"}
+    structured = settings.model_provider in {"ollama", "llama_cpp", "codex"}
     answer, model_used = _complete(settings, SYSTEM_PROMPT, content, 180, structured=structured)
     if structured:
         try:
@@ -264,7 +357,7 @@ def draft_assistant_note(settings: Settings, kind: str, status: str,
 
 
 def chat_assistant(settings: Settings, history: list[dict]) -> tuple[str, str]:
-    if settings.model_provider in CLOUD_PROVIDERS:
+    if settings.model_provider in CLOUD_PROVIDERS and settings.model_provider != "codex":
         raise ValueError("General chat requires a local model to keep conversation text private")
     if not history or len(history) > 12:
         raise ValueError("Invalid chat history")
@@ -289,8 +382,8 @@ def chat_assistant(settings: Settings, history: list[dict]) -> tuple[str, str]:
 
 def suggest_assistant_prompts(settings: Settings, previous: list[str],
                               gmail_connected: bool) -> tuple[list[str], str]:
-    if settings.model_provider not in {"ollama", "llama_cpp"}:
-        raise ValueError("Suggestions require a local model")
+    if settings.model_provider not in {"ollama", "llama_cpp", "codex"}:
+        raise ValueError("Suggestions require a local model or Codex")
     if not isinstance(previous, list) or any(not isinstance(item, str) or len(item) > 120
                                              for item in previous):
         raise ValueError("Invalid previous suggestions")

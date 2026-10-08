@@ -19,7 +19,7 @@ from . import secrets
 from .assistant import parse_request
 from .config import DATA_DIR, SOCKET_PATH, Settings
 from .email_guard import Gmail
-from .models import chat_assistant, draft_assistant_note, explain, suggest_assistant_prompts, summarize_event
+from .models import chat_assistant, codex_status, draft_assistant_note, explain, suggest_assistant_prompts, summarize_event
 from .policy import decide
 from .reputation import Reputation
 from .scanners import allowed_download, scan_file, sha256_file
@@ -193,7 +193,7 @@ class Agent:
         if method == "assistant_reply":
             return self._assistant_reply(str(params.get("reply_id", "")))
         if method == "assistant_suggestions":
-            if self.settings.model_provider not in {"ollama", "llama_cpp"}:
+            if self.settings.model_provider not in {"ollama", "llama_cpp", "codex"}:
                 return {"status": "local_model_required"}
             previous = params.get("previous", [])
             if not isinstance(previous, list) or len(previous) > 9 or any(
@@ -335,11 +335,11 @@ class Agent:
             cleaned = [{"role": item.get("role"), "content": str(item.get("content", ""))}
                        for item in history[-11:] if isinstance(item, dict)]
             cleaned.append({"role": "user", "content": str(params.get("message", ""))[:2000]})
-            if self.settings.model_provider in {"ollama", "llama_cpp"}:
+            if self.settings.model_provider in {"ollama", "llama_cpp", "codex"}:
                 return self._queue_assistant_reply({"kind": "chat", "status": "pending",
                                                     "message": ""}, cleaned)
             return {"kind": "chat", "status": "local_model_required",
-                    "message": "General conversation is available with a local model. Select Ollama or llama.cpp in Models; cloud providers receive only coded security results."}
+                    "message": "Select Ollama, llama.cpp, or a signed-in Codex CLI in Models for general conversation. API cloud providers receive only coded security results."}
         if method == "status":
             if sys.platform == "win32":
                 from .windows_pipe import SCANNER_PIPE, request as pipe_request
@@ -380,6 +380,8 @@ class Agent:
             _, model_used = explain(self.settings, "connection_test", 0, "low", [],
                                     "Bluely model connection test")
             return {"model_used": model_used, "response": "Model API responded successfully."}
+        if method == "codex_status":
+            return codex_status()
         if method == "secrets_status":
             return secrets.availability()
         if method == "secret_set":

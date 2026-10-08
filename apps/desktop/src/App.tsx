@@ -17,6 +17,7 @@ type Quarantine = { id: string; event_id: string; original_path: string; sha256:
 type AgentStatus = { version: string; gmail: { connected: boolean; oauth_status: string; last_scan: string | null };
   unread_alerts: number;
   tools: Record<string, boolean>; reputation_configured: boolean; virustotal_configured: boolean; scan_queue: number };
+type CodexStatus = { installed: boolean; connected: boolean; message: string };
 type Settings = { model_provider: string; model_name: string; model_endpoint: string;
   gmail_client_id: string; downloads_dir: string; email_interval_minutes: number; max_scan_bytes: number;
   virustotal_file_lookups: boolean };
@@ -41,7 +42,7 @@ const nav: { id: Tab; label: string; icon: typeof Shield }[] = [
 
 const defaultModels: Record<string, string> = {
   ollama: "qwen3:8b", llama_cpp: "local-model", huggingface: "Qwen/Qwen3-4B-Thinking-2507",
-  openai: "gpt-4.1-mini", anthropic: "claude-sonnet-4-5"
+  openai: "gpt-4.1-mini", anthropic: "claude-sonnet-4-5", codex: "default"
 };
 
 async function rpc<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
@@ -101,6 +102,7 @@ export default function App() {
   const [emailScanPopup, setEmailScanPopup] = useState<EmailScanPopup | null>(null);
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [suggestionStatus, setSuggestionStatus] = useState<"loading" | "ready" | "unavailable" | "local_model_required">("loading");
+  const [codexStatus, setCodexStatus] = useState<CodexStatus | null>(null);
   const chatHistoryRef = useRef<HTMLDivElement>(null);
   const chatGenerationRef = useRef(0);
   const suggestionGenerationRef = useRef(0);
@@ -124,6 +126,11 @@ export default function App() {
   }, []);
 
   useEffect(() => { refresh(); const timer = window.setInterval(refresh, 5000); return () => clearInterval(timer); }, [refresh]);
+  useEffect(() => {
+    if (tab === "models" && settings?.model_provider === "codex" && agent) {
+      void rpc<CodexStatus>("codex_status").then(setCodexStatus).catch(() => setCodexStatus(null));
+    }
+  }, [tab, settings?.model_provider, agent !== null]);
   useEffect(() => { chatHistoryRef.current?.scrollTo({ top: chatHistoryRef.current.scrollHeight }); }, [messages, chatBusy, tab]);
 
   const agentReady = Boolean(agent);
@@ -147,7 +154,7 @@ export default function App() {
           return;
         }
         if (!started.reply_id) throw new Error("Suggestion request was not started");
-        for (let attempt = 0; attempt < 75; attempt++) {
+        for (let attempt = 0; attempt < 135; attempt++) {
           await new Promise(resolve => window.setTimeout(resolve, 1000));
           if (generation !== suggestionGenerationRef.current) return;
           const result = await rpc<{ status: string; suggestions?: string[] }>("assistant_reply", { reply_id: started.reply_id });
@@ -290,7 +297,7 @@ export default function App() {
   }
 
   async function waitForModelReply(replyId: string, messageId: string, generation: number) {
-    for (let attempt = 0; attempt < 70; attempt++) {
+    for (let attempt = 0; attempt < 135; attempt++) {
       await new Promise(resolve => window.setTimeout(resolve, 1000));
       if (chatGenerationRef.current !== generation) return;
       try {
@@ -471,7 +478,7 @@ export default function App() {
         <div className="chat-suggestions" aria-live="polite">{suggestionStatus === "ready" ? suggestions.map(suggestion =>
           <button key={suggestion} onClick={() => setChatInput(suggestion)}>{suggestion}</button>) :
           <small>{suggestionStatus === "loading" ? "Creating new suggestions..." :
-            suggestionStatus === "local_model_required" ? "Select a local model in Models for AI suggestions." :
+            suggestionStatus === "local_model_required" ? "Select a local model or Codex in Models for AI suggestions." :
             "AI suggestions are unavailable right now. You can still ask Bluely anything."}</small>}</div>
       </div>}
 
@@ -483,13 +490,14 @@ export default function App() {
             }}><RotateCcw size={16} /> Restore</button>}</div>)}</div>}
       </div>}
 
-      {tab === "models" && settings && <div className="page narrow"><div className="section-head"><div><h2>Analysis model</h2><p>One explicitly selected provider</p></div><span className="pill neutral">Explanations only</span></div>
+      {tab === "models" && settings && <div className="page narrow"><div className="section-head"><div><h2>Analysis model</h2><p>One explicitly selected provider</p></div><span className="pill neutral">Assistant & explanations</span></div>
         <section className="form-section full"><div className="form-grid"><label>Provider<select value={settings.model_provider} onChange={e => setSettings({ ...settings, model_provider: e.target.value, model_name: defaultModels[e.target.value] })}>
           <option value="ollama">Ollama · local</option><option value="llama_cpp">llama.cpp · local</option><option value="huggingface">Hugging Face · hosted</option>
-          <option value="openai">OpenAI · cloud</option><option value="anthropic">Anthropic · cloud</option></select></label>
-          <label>Model<input value={settings.model_name} onChange={e => setSettings({ ...settings, model_name: e.target.value })} /></label>
+          <option value="openai">OpenAI API · cloud</option><option value="anthropic">Anthropic API · cloud</option>
+          <option value="codex">Codex · ChatGPT plan</option></select></label>
+          {settings.model_provider !== "codex" && <label>Model<input value={settings.model_name} onChange={e => setSettings({ ...settings, model_name: e.target.value })} /></label>}
           {["ollama", "llama_cpp"].includes(settings.model_provider) && <label className="wide">Local endpoint<input value={settings.model_endpoint} onChange={e => setSettings({ ...settings, model_endpoint: e.target.value })} /></label>}</div>
-          <div className="form-actions"><span>Cloud providers receive coded evidence only. Email bodies, URLs, and file contents stay local.</span>
+          <div className="form-actions"><span>{settings.model_provider === "codex" ? "Codex receives your chat text and coded security evidence. Scan contents are not automatically included." : "API cloud providers receive coded evidence only. Chat requires a local model or Codex."}</span>
             <div className="button-group"><button className="secondary" disabled={Boolean(busy)} onClick={async () => {
               const saved = await action("Settings", "settings_update", { model_provider: settings.model_provider, model_name: settings.model_name, model_endpoint: settings.model_endpoint });
               if (!saved) return;
@@ -498,6 +506,9 @@ export default function App() {
             }}><Activity size={16} /> Save & test</button>
               <button className="primary" disabled={Boolean(busy)} onClick={() => saveSettings({ model_provider: settings.model_provider, model_name: settings.model_name, model_endpoint: settings.model_endpoint })}><Check size={16} /> Save model</button></div></div>
           {modelTest && <p className="model-test" role="status">{modelTest}</p>}</section>
+        {settings.model_provider === "codex" && <section className="form-section full lower"><h3>ChatGPT plan <span className={`pill ${codexStatus?.connected ? "success" : "neutral"}`}>{codexStatus?.connected ? "Connected" : "Setup needed"}</span></h3>
+          <p className="muted">{codexStatus?.message || "Checking Codex CLI..."} On Linux or Windows, install Codex CLI with <code>npm install -g @openai/codex</code>, then run <code>codex login</code> in your terminal and choose ChatGPT sign-in. Return here and check the connection. No local model is required.</p>
+          <div className="form-actions"><span>Codex CLI uses the ChatGPT account signed in on this computer. Plan limits apply.</span><div className="button-group"><button className="secondary" onClick={() => void invoke("open_in_chromium", { address: "https://developers.openai.com/codex/cli" }).catch(error => setNotice(`Codex guide: ${String(error)}`))}>Install guide</button><button className="secondary" onClick={() => void rpc<CodexStatus>("codex_status").then(setCodexStatus).catch(error => setNotice(`Codex: ${String(error)}`))}><RefreshCw size={16} /> Check connection</button></div></div></section>}
         {["huggingface", "openai", "anthropic"].includes(settings.model_provider) && <section className="form-section full lower"><h3>Provider key <span className={`pill ${secrets[`${settings.model_provider}_api_key`] ? "success" : "neutral"}`}>{secrets[`${settings.model_provider}_api_key`] ? "Stored" : "Missing"}</span></h3>
           <div className="input-row"><input type="password" value={keyInput} onChange={e => setKeyInput(e.target.value)} placeholder="API key" aria-label="Provider API key" autoComplete="off" />
             <button className="secondary" onClick={() => saveSecret(`${settings.model_provider}_api_key`, keyInput, () => setKeyInput(""))}><KeyRound size={16} /> Store key</button></div></section>}

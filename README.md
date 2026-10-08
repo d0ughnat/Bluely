@@ -7,12 +7,18 @@ Bluely is a local-first security proof of concept for Linux and Windows. A user 
 - One local user and one Gmail account; first scan covers seven days, then a 15-minute incremental schedule.
 - Chrome/Edge navigation warnings and post-download ClamAV/YARA scans on Linux or Microsoft Defender scans on Windows.
 - Read-only Gmail OAuth, local SQLite findings and audit log, OS-keyring credentials.
-- Ollama, llama.cpp/OpenAI-compatible local endpoints, hosted Hugging Face, OpenAI, and Anthropic explanation adapters. One provider is selected explicitly; cloud providers receive coded evidence only.
+- Ollama, llama.cpp/OpenAI-compatible local endpoints, hosted Hugging Face, OpenAI and Anthropic API adapters, plus Codex CLI with ChatGPT sign-in. One provider is selected explicitly; cloud providers receive coded security evidence only.
 - User-approved quarantine and confirmed restore for strong scanner detections.
 - Optional VirusTotal SHA-256 reputation for completed downloads, manual URL/domain/IP/hash reports, and confirmed URL or file submissions.
-- An assistant that accepts email-scan and URL-check requests, with local-model conversation and model follow-ups but no model tool execution rights.
+- An assistant that accepts email-scan and URL-check requests, with local-model or Codex conversation and model follow-ups but no model tool execution rights.
 
 The Chromium extension observes downloads **after completion**. It cannot guarantee that another program has not opened a file before Bluely finishes scanning. A `no_match` URL result means it was not found on the configured threat list, not that the site is safe. This release does not include vulnerability inventory, a cloud dashboard, or system-wide prevention.
+
+## Use Codex without a local model on Linux or Windows
+
+Install the [Codex CLI](https://developers.openai.com/codex/cli) with `npm install -g @openai/codex`, then run `codex login` in your terminal and choose **Sign in with ChatGPT**. In Bluely, open **Models**, select **Codex · ChatGPT plan**, choose **Check connection**, then **Save & test**. Install and sign in as the same OS user that runs Bluely. On Linux, the user service also looks in common user install locations such as `~/.local/bin`, `~/.npm-global/bin`, and nvm's Node versions; on Windows, it also checks `%APPDATA%\npm`.
+
+Bluely uses the CLI's existing ChatGPT sign-in; it does not ask for or store the account password. Codex receives text you type into general chat and coded security evidence. Bluely does not automatically include scanned email bodies, inspected URLs, or file contents; anything you type into chat is sent. ChatGPT plan limits apply. The separate **OpenAI API** and **Anthropic API** choices require their own API keys and billing; they are for coded explanations, not general chat. Codex CLI is installed separately from Bluely on both operating systems.
 
 ## Install on Windows 10/11 x64
 
@@ -85,7 +91,7 @@ The desktop navigation is intentionally centered on **Assistant**. Ask it to che
 
 ### Assistant and VirusTotal
 
-In **Assistant**, ask "check my email" or "is https://example.com safe?". The command parser selects read-only actions; a model cannot issue commands. The selected model writes a professional follow-up from coded results. Other conversation uses the selected local model and recent chat messages. Raw general chat is not sent to cloud providers. A local model generates fresh question suggestions when Assistant opens and when you return to it. Use Reset chat to clear the visible thread. Assistant-initiated email and file scans show a result card when they finish, with the highest-risk finding linked to its detail in Alerts. The **Scan now** button in Email keeps that tab open and shows progress and results in a small popup. A Safe Browsing `no_match` is never described as proof of safety.
+In **Assistant**, ask "check my email" or "is https://example.com safe?". The command parser selects read-only actions; a model cannot issue Bluely commands. The selected model writes a professional follow-up from coded results. Other conversation uses the selected local model or a signed-in Codex CLI and recent chat messages. General chat remains unavailable for API cloud providers. The selected local model or Codex generates fresh question suggestions when Assistant opens and when you return to it. Use Reset chat to clear the visible thread. Assistant-initiated email and file scans show a result card when they finish, with the highest-risk finding linked to its detail in Alerts. The **Scan now** button in Email keeps that tab open and shows progress and results in a small popup. A Safe Browsing `no_match` is never described as proof of safety.
 
 Store a VirusTotal API key in **Integrations** to enable those Assistant actions. It supports existing reports for URLs, public domains, public IPs, and SHA-256 hashes; explicit URL submission and file upload return an analysis ID that can be checked later. Full URL lookup and submission disclose the path and query, so both require confirmation. File upload discloses bytes, requires confirmation, and is limited to 32 MB; Bluely substitutes a generic filename. Automatic download checks send only SHA-256 hashes when enabled. Do not query private indicators: [VirusTotal warns that submitted URLs may enter its dataset](https://docs.virustotal.com/reference/scan-url). The public API is [limited to four requests per minute and is not for commercial use](https://docs.virustotal.com/docs/api-overview); Bluely enforces the per-minute limit locally. VirusTotal votes add evidence but cannot, by themselves, authorize quarantine.
 

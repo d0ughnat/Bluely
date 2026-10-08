@@ -74,7 +74,7 @@ class Settings:
             if key not in allowed:
                 raise ValueError(f"Unknown setting: {key}")
             candidate[key] = value
-        if candidate["model_provider"] not in {"ollama", "llama_cpp", "huggingface", "openai", "anthropic"}:
+        if candidate["model_provider"] not in {"ollama", "llama_cpp", "huggingface", "openai", "anthropic", "codex"}:
             raise ValueError("Unsupported model provider")
         if not 1 <= candidate["email_interval_minutes"] <= 1440:
             raise ValueError("Email interval must be 1-1440 minutes")
