@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
@@ -10,10 +11,29 @@ def _xdg(name: str, fallback: str) -> Path:
     return Path(os.environ.get(name, str(Path.home() / fallback))) / "blueguard"
 
 
-DATA_DIR = _xdg("XDG_DATA_HOME", ".local/share")
-CONFIG_DIR = _xdg("XDG_CONFIG_HOME", ".config")
-RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", str(DATA_DIR)))
-SOCKET_PATH = RUNTIME_DIR / "blueguard.sock"
+if sys.platform == "win32":
+    DATA_DIR = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData/Local"))) / "Bluely"
+    CONFIG_DIR = DATA_DIR
+    RUNTIME_DIR = DATA_DIR
+    SOCKET_PATH = DATA_DIR / "blueguard.sock"  # Unix-only; Windows uses a named pipe.
+else:
+    DATA_DIR = _xdg("XDG_DATA_HOME", ".local/share")
+    CONFIG_DIR = _xdg("XDG_CONFIG_HOME", ".config")
+    RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", str(DATA_DIR)))
+    SOCKET_PATH = RUNTIME_DIR / "blueguard.sock"
+
+
+def default_downloads_dir() -> str:
+    if sys.platform == "win32":
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                                r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders") as key:
+                value, _ = winreg.QueryValueEx(key, "{374DE290-123F-4565-9164-39C4925E467B}")
+                return os.path.expandvars(value)
+        except (OSError, ValueError):
+            pass
+    return str(Path.home() / "Downloads")
 
 
 @dataclass
@@ -22,7 +42,7 @@ class Settings:
     model_name: str = "qwen3:8b"
     model_endpoint: str = "http://127.0.0.1:11434"
     gmail_client_id: str = ""
-    downloads_dir: str = str(Path.home() / "Downloads")
+    downloads_dir: str = default_downloads_dir()
     email_interval_minutes: int = 15
     max_scan_bytes: int = 512 * 1024 * 1024
     max_message_bytes: int = 1024 * 1024

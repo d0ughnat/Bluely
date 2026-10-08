@@ -1,0 +1,20 @@
+{
+  "bundle": {
+    "targets": ["nsis"],
+    "resources": {
+      "../../browser-extension/": "browser-extension/",
+      "windows/install-broker.ps1": "install-broker.ps1"
+    },
+    "externalBin": [
+      "binaries/bluely-agent",
+      "binaries/bluely-native-host",
+      "binaries/bluely-defender-broker"
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine",
+        "installerHooks": "windows/hooks.nsh"
+      }
+    }
+  }
+}

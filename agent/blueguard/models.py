@@ -17,11 +17,11 @@ SYSTEM_PROMPT = (
     "was performed when evidence is absent. Return only a JSON object with one string field named reply."
 )
 CLOUD_PROVIDERS = {"huggingface", "openai", "anthropic"}
-SAFE_CODES = {"clamav_detected", "yara_high_confidence", "known_malicious_url",
+SAFE_CODES = {"clamav_detected", "defender_detected", "yara_high_confidence", "known_malicious_url",
               "yara_match", "reply_to_mismatch", "auth_fail", "display_link_mismatch",
               "credential_request", "suspicious_attachment", "scan_status", "tool_status", "sha256",
               "vt_malicious_file", "vt_suspicious_file", "vt_malicious_domain", "vt_malicious_url"}
-SAFE_SOURCES = {"clamav", "yara", "safe_browsing", "headers", "content",
+SAFE_SOURCES = {"clamav", "defender", "yara", "safe_browsing", "headers", "content",
                 "attachment", "scan", "file", "virustotal"}
 ASSISTANT_PROMPT = (
     "You are Bluely's senior security analyst. The supplied investigation result is authoritative and "
@@ -211,6 +211,7 @@ INDICATOR_LABELS = {
     "suspicious_attachment": "the attachment type needs review",
     "known_malicious_url": "a URL matched a threat list",
     "clamav_detected": "ClamAV detected a threat",
+    "defender_detected": "Microsoft Defender detected a threat",
     "yara_high_confidence": "YARA found a strong match",
     "yara_match": "YARA found a pattern match",
     "vt_malicious_file": "VirusTotal reported malicious detections",

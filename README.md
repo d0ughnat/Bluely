@@ -1,11 +1,11 @@
 # Bluely
 
-Bluely is a local-first Linux security proof of concept. A user service scans Gmail and completed Chromium downloads, checks URLs using Safe Browsing hash prefixes, and records evidence for a Tauri desktop client. The model explains findings; deterministic policy controls the verdict. File quarantine and restore require confirmation in the desktop UI.
+Bluely is a local-first security proof of concept for Linux and Windows. A user agent scans Gmail and completed Chromium downloads, checks URLs using Safe Browsing hash prefixes, and records evidence for a Tauri desktop client. The model explains findings; deterministic policy controls the verdict. File quarantine and restore require confirmation in the desktop UI.
 
 ## What this release covers
 
-- One Linux user and one Gmail account; first scan covers seven days, then a 15-minute incremental schedule.
-- Chrome/Chromium navigation warnings and post-download ClamAV/YARA scans.
+- One local user and one Gmail account; first scan covers seven days, then a 15-minute incremental schedule.
+- Chrome/Edge navigation warnings and post-download ClamAV/YARA scans on Linux or Microsoft Defender scans on Windows.
 - Read-only Gmail OAuth, local SQLite findings and audit log, OS-keyring credentials.
 - Ollama, llama.cpp/OpenAI-compatible local endpoints, hosted Hugging Face, OpenAI, and Anthropic explanation adapters. One provider is selected explicitly; cloud providers receive coded evidence only.
 - User-approved quarantine and confirmed restore for strong scanner detections.
@@ -13,6 +13,20 @@ Bluely is a local-first Linux security proof of concept. A user service scans Gm
 - An assistant that accepts email-scan and URL-check requests, with local-model conversation and model follow-ups but no model tool execution rights.
 
 The Chromium extension observes downloads **after completion**. It cannot guarantee that another program has not opened a file before Bluely finishes scanning. A `no_match` URL result means it was not found on the configured threat list, not that the site is safe. This release does not include vulnerability inventory, a cloud dashboard, or system-wide prevention.
+
+## Install on Windows 10/11 x64
+
+Once the Windows release is published, open **PowerShell** and run this one line. It downloads the installer with `curl.exe`, checks it, requests administrator approval, installs Bluely, and opens the app:
+
+```powershell
+curl.exe -fL https://raw.githubusercontent.com/d0ughnat/Bluely/main/packaging/windows/install.ps1 -o "$env:TEMP\bluely-install.ps1"; if ($LASTEXITCODE -ne 0) { throw 'Bluely installer download failed' }; & "$env:TEMP\bluely-install.ps1"
+```
+
+The installer requires administrator approval to register the Defender scan broker. Windows may show an unsigned-app warning until a code-signing certificate is available. The agent starts with Bluely and at future sign-ins. Data and settings live under `%LOCALAPPDATA%\Bluely`; secrets use Windows Credential Manager. Microsoft Defender must be enabled for file scan verdicts. YARA is optional.
+
+To connect the browser extension, open `chrome://extensions` or `edge://extensions`, enable Developer mode, and load the `browser-extension` folder in the Bluely installation's `resources` folder. Copy the extension ID, paste it into **Integrations → Chromium extension**, and select **Register extension**. Reload the extension. Its popup should show the agent connection. The browser extension is unpacked; it is not published to a browser store.
+
+The Windows build is produced on a Windows x64 runner by `.github/workflows/windows.yml`: PyInstaller creates the Python programs, then Tauri creates one NSIS setup executable. The installer registers a SYSTEM startup task for the Defender broker and removes it on uninstall. To build locally, install Python 3.12, Node 20, Rust/MSVC and the [Tauri Windows prerequisites](https://v2.tauri.app/start/prerequisites/#windows), then follow the workflow commands. The installer currently has no code signature.
 
 ## Install on Pop!_OS / Ubuntu
 

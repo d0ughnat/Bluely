@@ -1,5 +1,6 @@
 import base64
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -186,10 +187,14 @@ class QuarantineTests(unittest.TestCase):
 
     def test_symlink_is_not_scanned(self):
         link = self.downloads / "linked.txt"
-        link.symlink_to(self.file)
+        try:
+            link.symlink_to(self.file)
+        except OSError as error:
+            self.skipTest(f"Symlink creation unavailable: {error}")
         with self.assertRaises(ValueError):
             allowed_download(str(link), self.agent.settings)
 
+    @unittest.skipIf(sys.platform == "win32", "ClamAV is the Linux scanner")
     def test_scanner_detection_is_evidence(self):
         def available(name):
             return "/usr/bin/clamscan" if name == "clamscan" else None
@@ -204,6 +209,7 @@ class QuarantineTests(unittest.TestCase):
 
 
 class SetupTests(unittest.TestCase):
+    @unittest.skipIf(sys.platform == "win32", "systemd setup is Linux-only")
     def test_user_service_keeps_virtualenv_interpreter(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

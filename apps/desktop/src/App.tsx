@@ -93,6 +93,7 @@ export default function App() {
   const [safeBrowsingKey, setSafeBrowsingKey] = useState("");
   const [virustotalKey, setVirustotalKey] = useState("");
   const [authUrl, setAuthUrl] = useState("");
+  const [extensionId, setExtensionId] = useState("");
   const [modelTest, setModelTest] = useState("");
   const [chatInput, setChatInput] = useState("");
   const [chatBusy, setChatBusy] = useState(false);
@@ -402,8 +403,8 @@ export default function App() {
         <div className="section-head lower"><div><h2>Recent findings</h2></div>
           <button className="text-button" onClick={() => setTab("alerts")}>View all <ChevronRight size={16} /></button></div>
         {eventTable(events.slice(0, 8), "Log in to Gmail or scan a download to see evidence here.")}
-        <div className="system-strip"><MonitorCheck size={19} /><span>ClamAV <strong>{agent?.tools.clamscan ? "Ready" : "Missing"}</strong></span>
-          <span>YARA <strong>{agent?.tools.yara ? "Ready" : "Missing"}</strong></span>
+        <div className="system-strip"><MonitorCheck size={19} /><span>{agent?.tools.defender !== undefined ? "Microsoft Defender" : "ClamAV"} <strong>{(agent?.tools.defender ?? agent?.tools.clamscan) ? "Ready" : "Missing"}</strong></span>
+          <span>YARA <strong>{agent?.tools.yara ? "Ready" : "Optional"}</strong></span>
           <span>URL reputation <strong>{agent?.reputation_configured ? "Ready" : "Not configured"}</strong></span>
           <span>VirusTotal <strong>{agent?.virustotal_configured ? "Connected" : "Not configured"}</strong></span></div>
       </div>}
@@ -415,7 +416,7 @@ export default function App() {
             <h4>Evidence</h4><ul className="evidence">{selectedEvent.evidence.map((finding, index) => <li key={index}><span>{finding.source}</span><strong>{finding.code.replaceAll("_", " ")}</strong><small>{finding.detail}</small></li>)}</ul>
             <h4>Analysis</h4><p className="explanation">{selectedEvent.explanation || "No model explanation is available. The tool verdict remains active."}</p>
             {selectedEvent.model_used && <p className="muted tiny">{selectedEvent.model_used}</p>}
-            {selectedEvent.kind === "download" && selectedEvent.status === "open" && selectedEvent.evidence.some(f => ["clamav_detected", "yara_high_confidence"].includes(f.code)) &&
+            {selectedEvent.kind === "download" && selectedEvent.status === "open" && selectedEvent.evidence.some(f => ["clamav_detected", "defender_detected", "yara_high_confidence"].includes(f.code)) &&
               <button className="primary danger-button" disabled={Boolean(busy)} onClick={() => {
                 if (window.confirm(`Move this detected file into Bluely quarantine?\n\n${selectedEvent.subject}`)) action("Quarantine", "quarantine", { event_id: selectedEvent.id, confirmed: true });
               }}><FileLock2 size={16} /> Quarantine file</button>}
@@ -518,9 +519,10 @@ export default function App() {
         <section className="form-section full lower"><h3>Scanning</h3><div className="form-grid"><label>Gmail interval (minutes)<input type="number" min="1" max="1440" value={settings.email_interval_minutes} onChange={e => setSettings({ ...settings, email_interval_minutes: Number(e.target.value) })} /></label>
           <label>Maximum download size (MB)<input type="number" min="1" max="2048" value={Math.round(settings.max_scan_bytes / 1048576)} onChange={e => setSettings({ ...settings, max_scan_bytes: Number(e.target.value) * 1048576 })} /></label>
           <label className="wide">Downloads folder<input value={settings.downloads_dir} onChange={e => setSettings({ ...settings, downloads_dir: e.target.value })} /></label></div>
-          <div className="form-actions"><span>ClamAV {agent?.tools.clamscan ? "ready" : "missing"} · YARA {agent?.tools.yara ? "ready" : "missing"}</span>
+          <div className="form-actions"><span>{agent?.tools.defender !== undefined ? "Microsoft Defender" : "ClamAV"} {(agent?.tools.defender ?? agent?.tools.clamscan) ? "ready" : "missing"} · YARA {agent?.tools.yara ? "ready" : "optional"}</span>
             <button className="primary" onClick={() => saveSettings({ email_interval_minutes: settings.email_interval_minutes, max_scan_bytes: settings.max_scan_bytes, downloads_dir: settings.downloads_dir })}><Check size={16} /> Save schedule</button></div></section>
-        <section className="form-section full lower"><h3>Chromium extension</h3><p className="muted">Load <code>apps/browser-extension</code> in Chromium, then register its extension ID with <code>bluely setup --extension-id ID</code>.</p>
+        <section className="form-section full lower"><h3>Chromium extension</h3><p className="muted">{agent?.tools.defender !== undefined ? "Load the bundled browser-extension folder in Chrome or Edge, then paste its extension ID here." : <>Load <code>apps/browser-extension</code> in Chromium, then register its extension ID with <code>bluely setup --extension-id ID</code>.</>}</p>
+          {agent?.tools.defender !== undefined && <div className="form-actions"><input value={extensionId} onChange={e => setExtensionId(e.target.value.trim())} placeholder="32-letter extension ID" aria-label="Browser extension ID" /><button className="primary" disabled={Boolean(busy) || !/^[a-p]{32}$/.test(extensionId)} onClick={() => void action("Extension", "extension_register", { extension_id: extensionId })}>Register extension</button></div>}
           <div className="tool-line"><LockKeyhole size={18} /><span>Native host accepts URL checks and download scans only.</span></div></section>
       </div>}
 

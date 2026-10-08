@@ -15,7 +15,7 @@ def decide(evidence: list[dict]) -> Decision:
     strong = False
     for finding in evidence:
         code = finding.get("code")
-        if code == "clamav_detected":
+        if code in {"clamav_detected", "defender_detected"}:
             score += 90
             strong = True
         elif code == "yara_high_confidence":

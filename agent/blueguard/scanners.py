@@ -6,6 +6,7 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -40,10 +41,11 @@ def scan_file(path: str, settings: Settings) -> dict:
     if source_stat.st_size > settings.max_scan_bytes:
         return {"status": "skipped_size", "path": str(source), "size": source_stat.st_size,
                 "sha256": "", "evidence": []}
-    DATA_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="scan-", dir=DATA_DIR) as temp_dir:
-        snapshot = Path(temp_dir) / "sample"
-        descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
+    scan_root = DATA_DIR / "scan" if sys.platform == "win32" else DATA_DIR
+    scan_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="scan-", dir=scan_root) as temp_dir:
+        snapshot = Path(temp_dir) / ("sample.bin" if sys.platform == "win32" else "sample")
+        descriptor = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
         digest = hashlib.sha256()
         try:
             before = os.fstat(descriptor)
@@ -67,7 +69,18 @@ def scan_file(path: str, settings: Settings) -> dict:
                                     capture_output=True, text=True, timeout=10, check=False)
             if result.returncode == 0:
                 mime = result.stdout.strip()[:100]
-        if shutil.which("clamscan"):
+        if sys.platform == "win32":
+            from .windows_pipe import SCANNER_PIPE, request as pipe_request
+            try:
+                verdict = pipe_request(SCANNER_PIPE, {"method": "scan", "path": str(snapshot),
+                                                        "sha256": digest.hexdigest()}, 180000)
+                if verdict.get("status") == "detected":
+                    evidence.append({"source": "defender", "code": "defender_detected",
+                                     "detail": "Microsoft Defender detected a threat in the scan snapshot"})
+                tools["defender"] = verdict.get("status", "error")
+            except (OSError, ValueError):
+                tools["defender"] = "unavailable"
+        elif shutil.which("clamscan"):
             try:
                 result = subprocess.run(["clamscan", "--no-summary", str(snapshot)],
                                         capture_output=True, text=True, timeout=120, check=False)

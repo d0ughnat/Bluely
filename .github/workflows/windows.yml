@@ -1,0 +1,80 @@
+name: Windows installer
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/windows.yml
+      - README.md
+      - agent/**
+      - apps/desktop/**
+      - packaging/windows/**
+      - pyproject.toml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-installer-release
+  cancel-in-progress: false
+
+jobs:
+  windows-installer:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e . pyinstaller
+          npm ci --prefix apps/desktop
+      - name: Python tests
+        run: python -m unittest discover -s tests -v
+        env:
+          PYTHONPATH: agent
+      - name: Build Python programs
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --clean --onefile --noconsole --name bluely-agent --paths agent --collect-data blueguard --collect-submodules keyring.backends packaging/windows/agent_entry.py
+          pyinstaller --noconfirm --clean --onefile --console --name bluely-native-host --paths agent --collect-data blueguard --collect-submodules keyring.backends packaging/windows/native_host_entry.py
+          pyinstaller --noconfirm --clean --onefile --noconsole --name bluely-defender-broker --paths agent --collect-data blueguard packaging/windows/broker_entry.py
+          New-Item -ItemType Directory -Force apps/desktop/src-tauri/binaries | Out-Null
+          Copy-Item dist/bluely-agent.exe apps/desktop/src-tauri/binaries/bluely-agent-x86_64-pc-windows-msvc.exe
+          Copy-Item dist/bluely-native-host.exe apps/desktop/src-tauri/binaries/bluely-native-host-x86_64-pc-windows-msvc.exe
+          Copy-Item dist/bluely-defender-broker.exe apps/desktop/src-tauri/binaries/bluely-defender-broker-x86_64-pc-windows-msvc.exe
+      - name: Smoke test packaged agent and browser host
+        run: python packaging/windows/smoke.py dist
+      - name: Build installer
+        working-directory: apps/desktop
+        run: npm run tauri build -- --config src-tauri/tauri.windows.conf.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Bluely-Windows-x64-unsigned
+          path: apps/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
+      - name: Publish curl-installable Windows release
+        if: github.ref == 'refs/heads/main'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $bundle = Get-ChildItem apps/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          if (-not $bundle) { throw 'NSIS installer was not produced' }
+          $installer = 'Bluely-Setup-x64.exe'
+          Copy-Item $bundle.FullName $installer
+          $hash = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          [System.IO.File]::WriteAllText('Bluely-Setup-x64.exe.sha256', "$hash  $installer`n")
+          $tag = "windows-$($env:GITHUB_SHA.Substring(0, 12))"
+          gh release create $tag $installer 'Bluely-Setup-x64.exe.sha256' --target $env:GITHUB_SHA --latest --title "Bluely Windows $($env:GITHUB_SHA.Substring(0, 12))" --notes 'Unsigned Windows 10/11 x64 installer. Review the setup instructions in README.md.'

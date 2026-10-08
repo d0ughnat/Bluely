@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 import hashlib
 import os
+import errno
 import shutil
 import socket
 import socketserver
+import sys
 import threading
 import time
 import uuid
@@ -339,9 +341,18 @@ class Agent:
             return {"kind": "chat", "status": "local_model_required",
                     "message": "General conversation is available with a local model. Select Ollama or llama.cpp in Models; cloud providers receive only coded security results."}
         if method == "status":
+            if sys.platform == "win32":
+                from .windows_pipe import SCANNER_PIPE, request as pipe_request
+                try:
+                    defender_ready = pipe_request(SCANNER_PIPE, {"method": "status"}, 1000).get("ready", False)
+                except (OSError, ValueError):
+                    defender_ready = False
+                tools = {"defender": defender_ready, "yara": bool(shutil.which("yara"))}
+            else:
+                tools = {name: bool(shutil.which(name)) for name in ("clamscan", "yara", "file")}
             return {"version": "0.1.0", "gmail": self.gmail.status(),
                     "unread_alerts": self.store.unread_alert_count(),
-                    "tools": {name: bool(shutil.which(name)) for name in ("clamscan", "yara", "file")},
+                    "tools": tools,
                     "reputation_configured": bool(secrets.get("safe_browsing_api_key")),
                     "virustotal_configured": bool(secrets.get("virustotal_api_key")),
                     "scan_queue": len(self._scans)}
@@ -358,6 +369,12 @@ class Agent:
             self.settings.update(params)
             self.settings.save()
             self.store.audit("settings_update", "desktop_user", "success", {"keys": sorted(params)})
+            return {"saved": True}
+        if method == "extension_register":
+            if sys.platform != "win32":
+                raise ValueError("Use bluely setup --extension-id on Linux")
+            from .cli import setup_windows
+            setup_windows(str(params.get("extension_id", "")))
             return {"saved": True}
         if method == "model_test":
             _, model_used = explain(self.settings, "connection_test", 0, "low", [],
@@ -502,7 +519,7 @@ class Agent:
         if destination.exists():
             raise ValueError("Quarantine target already exists")
         try:
-            os.rename(path, destination)
+            _move_verified(path, destination, original_hash)
         except OSError as error:
             raise ValueError("Cannot move file into quarantine") from error
         destination.chmod(0o600)
@@ -527,11 +544,32 @@ class Agent:
             raise ValueError("Quarantined file failed integrity check")
         if not destination.parent.is_dir():
             raise ValueError("Original folder no longer exists")
-        os.rename(source, destination)
+        _move_verified(source, destination, record["sha256"])
         self.store.mark_restored(record_id)
         self.store.audit("restore", "explicit_user_confirmation", "success",
                          {"sha256": record["sha256"]}, record["event_id"])
         return {"restored": True, "path": str(destination)}
+
+
+def _move_verified(source: Path, destination: Path, expected_hash: str) -> None:
+    """Move across volumes without discarding the source before a verified copy exists."""
+    try:
+        os.rename(source, destination)
+        return
+    except OSError as error:
+        if error.errno != errno.EXDEV and sys.platform != "win32":
+            raise
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    try:
+        descriptor = os.open(destination, flags, 0o600)
+        with os.fdopen(descriptor, "wb") as output, source.open("rb") as input_file:
+            shutil.copyfileobj(input_file, output, 1024 * 1024)
+        if sha256_file(destination) != expected_hash or sha256_file(source) != expected_hash:
+            raise ValueError("File changed while moving; retry the operation")
+        source.unlink()
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
 
 
 class Handler(socketserver.StreamRequestHandler):
@@ -540,9 +578,7 @@ class Handler(socketserver.StreamRequestHandler):
         if len(raw) > 1024 * 1024:
             return
         try:
-            request = json.loads(raw)
-            result = self.server.agent.dispatch(request["method"], request.get("params", {}))
-            response = {"ok": True, "result": result}
+            response = handle_rpc(self.server.agent, json.loads(raw))
         except Exception as error:
             response = {"ok": False, "error": str(error)[:300]}
         try:
@@ -551,15 +587,24 @@ class Handler(socketserver.StreamRequestHandler):
             pass
 
 
-class Server(socketserver.ThreadingUnixStreamServer):
-    daemon_threads = True
+if sys.platform != "win32":
+    class Server(socketserver.ThreadingUnixStreamServer):
+        daemon_threads = True
 
-    def __init__(self, path: str, agent: Agent):
-        self.agent = agent
-        super().__init__(path, Handler)
+        def __init__(self, path: str, agent: Agent):
+            self.agent = agent
+            super().__init__(path, Handler)
+
+
+def handle_rpc(agent: Agent, payload: dict) -> dict:
+    return {"ok": True, "result": agent.dispatch(payload["method"], payload.get("params", {}))}
 
 
 def request(method: str, params: dict | None = None, timeout: float = 20) -> dict:
+    if sys.platform == "win32":
+        from .windows_pipe import AGENT_PIPE, request as pipe_request
+        return pipe_request(AGENT_PIPE, {"method": method, "params": params or {}},
+                            int(timeout * 1000))
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
         connection.settimeout(timeout)
         connection.connect(str(SOCKET_PATH))
@@ -574,14 +619,15 @@ def request(method: str, params: dict | None = None, timeout: float = 20) -> dic
 
 
 def serve() -> None:
-    os.umask(0o077)
-    SOCKET_PATH.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if SOCKET_PATH.exists():
-        try:
-            request("status", timeout=1)
-            raise RuntimeError("Bluely agent is already running")
-        except (ConnectionRefusedError, FileNotFoundError, TimeoutError, OSError):
-            SOCKET_PATH.unlink()
+    if sys.platform != "win32":
+        os.umask(0o077)
+        SOCKET_PATH.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if SOCKET_PATH.exists():
+            try:
+                request("status", timeout=1)
+                raise RuntimeError("Bluely agent is already running")
+            except (ConnectionRefusedError, FileNotFoundError, TimeoutError, OSError):
+                SOCKET_PATH.unlink()
     agent = Agent()
 
     def schedule() -> None:
@@ -590,15 +636,20 @@ def serve() -> None:
                 agent._gmail_scan()
             time.sleep(agent.settings.email_interval_minutes * 60)
 
-    with Server(str(SOCKET_PATH), agent) as server:
-        SOCKET_PATH.chmod(0o600)
-        threading.Thread(target=schedule, daemon=True).start()
-        try:
-            server.serve_forever(poll_interval=0.5)
-        except KeyboardInterrupt:
-            pass
-        finally:
-            agent._scan_pool.shutdown(wait=False, cancel_futures=True)
-            agent._model_pool.shutdown(wait=False, cancel_futures=True)
+    threading.Thread(target=schedule, daemon=True).start()
+    try:
+        if sys.platform == "win32":
+            from .windows_pipe import AGENT_PIPE, serve as serve_pipe
+            serve_pipe(AGENT_PIPE, lambda payload, _handle: handle_rpc(agent, payload), user_only=True)
+        else:
+            with Server(str(SOCKET_PATH), agent) as server:
+                SOCKET_PATH.chmod(0o600)
+                server.serve_forever(poll_interval=0.5)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        agent._scan_pool.shutdown(wait=False, cancel_futures=True)
+        agent._model_pool.shutdown(wait=False, cancel_futures=True)
+        if sys.platform != "win32":
             SOCKET_PATH.unlink(missing_ok=True)
-            agent.store.close()
+        agent.store.close()
