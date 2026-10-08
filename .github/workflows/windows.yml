@@ -80,16 +80,15 @@ jobs:
           & $sevenZip l $bundle.FullName | Select-String 'bluely-agent|native-host|_sqlite3|sqlite3.dll' | Select-Object -First 40
           & $sevenZip x $bundle.FullName "-o$extract" -y | Out-Null
           if ($LASTEXITCODE -ne 0) { throw 'Could not extract NSIS setup payload' }
-          $resources = Get-ChildItem $extract -Directory -Recurse | Where-Object {
-            (Test-Path (Join-Path $_.FullName 'agent/bluely-agent.exe')) -and
-            (Test-Path (Join-Path $_.FullName 'native-host/bluely-native-host.exe'))
-          } | Select-Object -First 1
-          if (-not $resources) {
+          $agentFolder = Join-Path $extract 'agent'
+          $nativeHostFolder = Join-Path $extract 'native-host'
+          if (-not (Test-Path (Join-Path $agentFolder 'bluely-agent.exe')) -or
+              -not (Test-Path (Join-Path $nativeHostFolder 'bluely-native-host.exe'))) {
             Get-ChildItem $extract -File -Recurse | Where-Object { $_.Name -match 'bluely-agent|native-host|_sqlite3|sqlite3.dll' } | Select-Object -First 40 -ExpandProperty FullName
             throw 'NSIS setup resource paths differ from the expected agent/native-host layout'
           }
-          python packaging/windows/verify_sqlite.py --agent-folder "$($resources.FullName)/agent" --native-host-folder "$($resources.FullName)/native-host"
-          python packaging/windows/smoke.py $resources.FullName
+          python packaging/windows/verify_sqlite.py --agent-folder $agentFolder --native-host-folder $nativeHostFolder
+          python packaging/windows/smoke.py $extract
       - uses: actions/upload-artifact@v4
         if: always()
         with:
