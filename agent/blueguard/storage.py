@@ -108,6 +108,27 @@ class Store:
                                    (min(max(limit, 1), 500),)).fetchall()
         return [self._event(row) for row in rows]
 
+    def list_all_events(self) -> list[dict]:
+        with self._lock:
+            rows = self.db.execute("SELECT * FROM events ORDER BY created_at DESC").fetchall()
+        return [self._event(row) for row in rows]
+
+    def unread_alert_count(self) -> int:
+        seen_through = self.get_state("alerts_seen_through") or ""
+        with self._lock:
+            row = self.db.execute("SELECT COUNT(*) FROM events WHERE risk >= 30 AND status = 'open' "
+                                  "AND created_at > ?", (seen_through,)).fetchone()
+        return int(row[0])
+
+    def mark_alerts_seen(self, through: str) -> int:
+        with self._lock:
+            if not self.db.execute("SELECT 1 FROM events WHERE created_at = ?", (through,)).fetchone():
+                raise ValueError("Unknown alert checkpoint")
+            previous = self.get_state("alerts_seen_through") or ""
+            if through > previous:
+                self.set_state("alerts_seen_through", through)
+        return self.unread_alert_count()
+
     def audit(self, action: str, authorization: str, result: str,
               detail: dict, event_id: str | None = None) -> None:
         with self._lock:
@@ -171,6 +192,12 @@ class Store:
         with self._lock:
             self.db.execute("INSERT OR IGNORE INTO processed_messages VALUES (?, ?)",
                             (message_id, now()))
+            self.db.commit()
+
+    def reset_gmail_scan(self) -> None:
+        with self._lock:
+            self.db.execute("DELETE FROM state WHERE key = 'gmail_last_scan'")
+            self.db.execute("DELETE FROM processed_messages")
             self.db.commit()
 
     @staticmethod

@@ -17,7 +17,7 @@ from . import secrets
 from .assistant import parse_request
 from .config import DATA_DIR, SOCKET_PATH, Settings
 from .email_guard import Gmail
-from .models import chat_assistant, draft_assistant_note, explain
+from .models import chat_assistant, draft_assistant_note, explain, suggest_assistant_prompts, summarize_event
 from .policy import decide
 from .reputation import Reputation
 from .scanners import allowed_download, scan_file, sha256_file
@@ -40,6 +40,22 @@ class Agent:
         self._assistant_lock = threading.Lock()
         self._assistant_jobs = {}
         self._scan_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="blueguard-scan")
+        self._scan_jobs: dict[str, tuple[float, object]] = {}
+        self._scan_paths: dict[str, str] = {}
+        self._scan_job_lock = threading.Lock()
+        if self.store.get_state("alert_summary_version") != "2":
+            self._model_pool.submit(self._repair_alert_summaries)
+
+    def _repair_alert_summaries(self) -> None:
+        try:
+            for event in self.store.list_all_events():
+                explanation, model_used = summarize_event(self.settings, event["kind"], event["risk"],
+                                                           event["verdict"], event["evidence"], event["subject"])
+                self.store.update_explanation(event["id"], explanation, model_used)
+            self.store.set_state("alert_summary_version", "2")
+        except Exception as error:
+            self.store.audit("alert_summary_repair", "selected_provider", "error",
+                             {"type": type(error).__name__})
 
     def _queue_assistant_reply(self, result: dict, history: list[dict] | None = None) -> dict:
         job_id = uuid.uuid4().hex
@@ -67,6 +83,8 @@ class Agent:
             self._assistant_jobs.pop(job_id, None)
         try:
             note, model_used = future.result()
+            if isinstance(note, list):
+                return {"status": "ready", "suggestions": note, "model_used": model_used}
             return {"status": "ready", "note": note, "model_used": model_used}
         except Exception:
             return {"status": "unavailable"}
@@ -74,25 +92,59 @@ class Agent:
     def _explain(self, event: dict) -> None:
         def run() -> None:
             try:
-                explanation, model_used = explain(self.settings, event["kind"], event["risk"],
-                                                   event["verdict"], event["evidence"], event["subject"])
+                explanation, model_used = summarize_event(self.settings, event["kind"], event["risk"],
+                                                           event["verdict"], event["evidence"], event["subject"])
                 self.store.update_explanation(event["id"], explanation, model_used)
             except Exception as error:
                 self.store.audit("model_explain", "selected_provider", "unavailable",
                                  {"type": type(error).__name__}, event["id"])
         self._model_pool.submit(run)
 
-    def _gmail_scan(self) -> None:
-        if not self._gmail_lock.acquire(blocking=False):
-            return
+    def _register_scan(self, future, scan_id: str | None = None) -> str:
+        scan_id = scan_id or uuid.uuid4().hex
+        with self._scan_job_lock:
+            now = time.monotonic()
+            self._scan_jobs = {key: value for key, value in self._scan_jobs.items()
+                               if now - value[0] < 600}
+            self._scan_jobs[scan_id] = (now, future)
+        return scan_id
+
+    def _assistant_scan_result(self, scan_id: str) -> dict:
+        with self._scan_job_lock:
+            item = self._scan_jobs.get(scan_id)
+        if not item or time.monotonic() - item[0] >= 600:
+            return {"status": "expired"}
+        future = item[1]
+        if not future.done():
+            return {"status": "pending"}
         try:
-            self.gmail.scan(self._explain)
+            result = future.result()
+        except Exception:
+            return {"status": "error"}
+        findings = [self.store.get_event(event_id) for event_id in result.get("finding_ids", [])]
+        findings = [event for event in findings if event]
+        top = max(findings, key=lambda event: (event["risk"], event["created_at"])) if findings else None
+        return {"status": result.get("status", "completed"), "kind": result.get("kind", "email"),
+                "messages": result.get("messages", 0), "findings": len(findings),
+                "truncated": result.get("truncated", False),
+                "top_finding": ({"id": top["id"], "kind": top["kind"], "subject": top["subject"],
+                                 "risk": top["risk"], "verdict": top["verdict"],
+                                 "summary": top["explanation"] or
+                                 f"Bluely policy rated this finding {top['verdict']} ({top['risk']}/100)."}
+                                if top else None)}
+
+    def _gmail_scan(self, acquired: bool = False) -> dict:
+        if not acquired and not self._gmail_lock.acquire(blocking=False):
+            return {"status": "running"}
+        try:
+            return {**self.gmail.scan(self._explain), "kind": "email"}
         except Exception as error:
             self.store.audit("gmail_scan", "schedule_or_user", "error", {"type": type(error).__name__})
+            return {"status": "error", "kind": "email", "messages": 0, "finding_ids": []}
         finally:
             self._gmail_lock.release()
 
-    def _download_scan(self, path: str, url: str) -> None:
+    def _download_scan(self, path: str, url: str) -> dict:
         try:
             result = scan_file(path, self.settings)
             evidence = result["evidence"]
@@ -125,27 +177,48 @@ class Agent:
                              {"status": result["status"], "tools": result.get("tools", {})}, event["id"])
             if decision.risk >= 30:
                 self._explain(event)
+            return {"status": "completed", "kind": "file", "messages": 1, "finding_ids": [event["id"]]}
         except Exception as error:
             self.store.audit("download_scan", "browser_event", "error",
                              {"type": type(error).__name__})
+            return {"status": "error", "kind": "file", "messages": 0, "finding_ids": []}
         finally:
             with self._scan_lock:
                 self._scans.discard(path)
+                self._scan_paths.pop(path, None)
 
     def dispatch(self, method: str, params: dict) -> dict | list:
         if method == "assistant_reply":
             return self._assistant_reply(str(params.get("reply_id", "")))
+        if method == "assistant_suggestions":
+            if self.settings.model_provider not in {"ollama", "llama_cpp"}:
+                return {"status": "local_model_required"}
+            previous = params.get("previous", [])
+            if not isinstance(previous, list) or len(previous) > 9 or any(
+                    not isinstance(item, str) or len(item) > 120 for item in previous):
+                raise ValueError("Invalid previous suggestions")
+            future = self._assistant_pool.submit(suggest_assistant_prompts, replace(self.settings),
+                                                 previous, self.gmail.status()["connected"])
+            job_id = uuid.uuid4().hex
+            with self._assistant_lock:
+                now = time.monotonic()
+                self._assistant_jobs = {key: value for key, value in self._assistant_jobs.items()
+                                        if now - value[0] < 600}
+                self._assistant_jobs[job_id] = (now, future)
+            return {"status": "pending", "reply_id": job_id}
+        if method == "assistant_scan_result":
+            return self._assistant_scan_result(str(params.get("scan_id", "")))
         if method == "assistant_request":
             parsed = parse_request(str(params.get("message", "")))
             intent = parsed["intent"]
             if intent == "email":
                 if not self.gmail.status()["connected"]:
                     return self._queue_assistant_reply({"kind": "email", "status": "not_connected",
-                                                        "message": "Gmail is not connected. Connect it in Integrations, then ask me to check your email again."})
+                                                        "message": "Gmail is not connected. Log in from the top bar, then ask me to check your email again."})
                 result = self.dispatch("gmail_scan", {})
-                return self._queue_assistant_reply({"kind": "email", "status": result["status"],
-                                                    "message": "Email scan started. Findings will appear in Email and Alerts." if result["status"] == "started"
-                                                    else "An email scan is already running. Findings will appear in Email and Alerts."})
+                return {"kind": "email", "status": result["status"], "scan_id": result.get("scan_id"),
+                        "message": "Checking Gmail now. I'll show the scan result here." if result["status"] == "started"
+                        else "An email scan is already running. Its findings will appear in Alerts."}
             if intent in {"url", "virustotal_domain", "virustotal_url"}:
                 if intent == "url":
                     try:
@@ -238,9 +311,10 @@ class Agent:
             if intent == "scan_download":
                 result = self.dispatch("scan_download", {"path": parsed["path"]})
                 status = result["status"]
-                return self._queue_assistant_reply({"kind": intent, "status": status,
-                                                    "message": "File scan queued. Findings will appear in Alerts." if status == "queued" else "That file is already being scanned.",
-                                                    "result": result})
+                return {"kind": intent, "status": status, "scan_id": result.get("scan_id"),
+                        "message": "Scanning the file now. I'll show the result here." if status == "queued"
+                        else "That file is already being scanned. Its finding will appear in Alerts." if not result.get("scan_id")
+                        else "That file is already being scanned. I'll show its result here."}
             if intent == "virustotal_upload_file":
                 result = self.dispatch("virustotal_upload_file", {"path": parsed["path"], "confirmed": True})
                 status = result["status"]
@@ -266,6 +340,7 @@ class Agent:
                     "message": "General conversation is available with a local model. Select Ollama or llama.cpp in Models; cloud providers receive only coded security results."}
         if method == "status":
             return {"version": "0.1.0", "gmail": self.gmail.status(),
+                    "unread_alerts": self.store.unread_alert_count(),
                     "tools": {name: bool(shutil.which(name)) for name in ("clamscan", "yara", "file")},
                     "reputation_configured": bool(secrets.get("safe_browsing_api_key")),
                     "virustotal_configured": bool(secrets.get("virustotal_api_key")),
@@ -303,11 +378,19 @@ class Agent:
             return {"status": "disconnected"}
         if method == "gmail_connect":
             return self.gmail.connect()
+        if method == "gmail_disconnect":
+            return self.gmail.disconnect()
+        if method == "alerts_mark_seen":
+            return {"unread_alerts": self.store.mark_alerts_seen(str(params.get("through", "")))}
         if method == "gmail_scan":
-            if self._gmail_lock.locked():
+            if not self._gmail_lock.acquire(blocking=False):
                 return {"status": "running"}
-            threading.Thread(target=self._gmail_scan, daemon=True).start()
-            return {"status": "started"}
+            try:
+                future = self._scan_pool.submit(self._gmail_scan, True)
+            except Exception:
+                self._gmail_lock.release()
+                raise
+            return {"status": "started", "scan_id": self._register_scan(future)}
         if method == "check_url":
             url = str(params.get("url", ""))[:4096]
             result = self.reputation.check(url)
@@ -376,10 +459,18 @@ class Agent:
             allowed_download(path, self.settings)
             with self._scan_lock:
                 if path in self._scans:
-                    return {"status": "running"}
+                    return {"status": "running", "scan_id": self._scan_paths.get(path)}
                 self._scans.add(path)
-            self._scan_pool.submit(self._download_scan, path, str(params.get("url", ""))[:4096])
-            return {"status": "queued"}
+                scan_id = uuid.uuid4().hex
+                self._scan_paths[path] = scan_id
+            try:
+                future = self._scan_pool.submit(self._download_scan, path, str(params.get("url", ""))[:4096])
+            except Exception:
+                with self._scan_lock:
+                    self._scans.discard(path)
+                    self._scan_paths.pop(path, None)
+                raise
+            return {"status": "queued", "scan_id": self._register_scan(future, scan_id)}
         if method == "events_list":
             return self.store.list_events(int(params.get("limit", 100)))
         if method == "audit_list":

@@ -8,9 +8,9 @@ import re
 import secrets as std_secrets
 import threading
 import time
-import webbrowser
 from html.parser import HTMLParser
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 
@@ -148,6 +148,8 @@ class Gmail:
         self._access_token = ""
         self._expires_at = 0.0
         self._oauth_status = "idle"
+        self._authorization_url = ""
+        self._generation = 0
         self._lock = threading.Lock()
 
     def status(self) -> dict:
@@ -158,10 +160,14 @@ class Gmail:
     def connect(self) -> dict:
         if not self.settings.gmail_client_id:
             raise ValueError("Set the Gmail OAuth client ID first")
+        client_secret = secrets.get("gmail_client_secret")
+        if not client_secret:
+            raise ValueError("Set the Gmail OAuth client secret in Integrations first")
         with self._lock:
             if self._oauth_status == "waiting":
-                return {"status": "waiting"}
+                return {"status": "waiting", "authorization_url": self._authorization_url}
             self._oauth_status = "waiting"
+            generation = self._generation
         verifier = std_secrets.token_urlsafe(64)
         challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
         state = std_secrets.token_urlsafe(32)
@@ -174,7 +180,8 @@ class Gmail:
                 callback["code"] = query.get("code", [""])[0]
                 callback["error"] = query.get("error", [""])[0]
                 ok = callback["state"] == state and bool(callback["code"])
-                content = b"Bluely connected. You may close this tab." if ok else b"Bluely connection failed."
+                content = (b"Google sign-in received. Return to Bluely to confirm the connection."
+                           if ok else b"Bluely connection failed. Return to Bluely for details.")
                 self.send_response(200 if ok else 400)
                 self.send_header("Content-Type", "text/plain; charset=utf-8")
                 self.send_header("Content-Length", str(len(content)))
@@ -192,34 +199,62 @@ class Gmail:
                   "access_type": "offline", "prompt": "consent", "state": state,
                   "code_challenge": challenge, "code_challenge_method": "S256"}
         url = AUTH_URL + "?" + urlencode(params)
+        self._authorization_url = url
 
         def complete() -> None:
             try:
                 server.handle_request()
-                if callback.get("state") != state or not callback.get("code"):
-                    raise ValueError("OAuth was cancelled, rejected, or timed out")
+                if callback.get("state") != state:
+                    raise ValueError("Google sign-in timed out or returned an invalid state")
+                if callback.get("error"):
+                    code = callback["error"]
+                    if not re.fullmatch(r"[a-z_]+", code):
+                        code = "unknown_error"
+                    raise ValueError(f"Google authorization: {code}")
+                if not callback.get("code"):
+                    raise ValueError("Google did not return an authorization code")
                 token = self._token_request({"client_id": self.settings.gmail_client_id,
-                                             "client_secret": secrets.get("gmail_client_secret"),
+                                             "client_secret": client_secret,
                                              "code": callback["code"], "code_verifier": verifier,
                                              "redirect_uri": redirect,
                                              "grant_type": "authorization_code"})
                 refresh = token.get("refresh_token", "")
                 if not refresh:
                     raise ValueError("Google did not return a refresh token")
-                secrets.set_secret("gmail_refresh_token", refresh)
-                self._access_token = token["access_token"]
-                self._expires_at = time.monotonic() + int(token.get("expires_in", 3600)) - 60
-                self._oauth_status = "connected"
+                with self._lock:
+                    if generation != self._generation:
+                        return
+                    secrets.set_secret("gmail_refresh_token", refresh)
+                    self._access_token = token["access_token"]
+                    self._expires_at = time.monotonic() + int(token.get("expires_in", 3600)) - 60
+                    self._oauth_status = "connected"
                 self.store.audit("gmail_connect", "user", "success", {})
             except Exception as error:
-                self._oauth_status = f"error: {type(error).__name__}"
-                self.store.audit("gmail_connect", "user", "error", {"type": type(error).__name__})
+                detail = str(error) if isinstance(error, (ValueError, RemoteError)) else type(error).__name__
+                with self._lock:
+                    if generation == self._generation:
+                        self._oauth_status = f"error: {detail}"
+                        self.store.audit("gmail_connect", "user", "error", {"type": type(error).__name__})
             finally:
+                with self._lock:
+                    if generation == self._generation:
+                        self._authorization_url = ""
                 server.server_close()
 
         threading.Thread(target=complete, daemon=True).start()
-        webbrowser.open(url)
         return {"status": "waiting", "authorization_url": url}
+
+    def disconnect(self) -> dict:
+        with self._lock:
+            self._generation += 1
+            secrets.set_secret("gmail_refresh_token", "")
+            self._access_token = ""
+            self._expires_at = 0.0
+            self._oauth_status = "idle"
+            self._authorization_url = ""
+            self.store.reset_gmail_scan()
+        self.store.audit("gmail_disconnect", "user", "success", {})
+        return {"status": "signed_out"}
 
     @staticmethod
     def _token_request(form: dict) -> dict:
@@ -228,17 +263,32 @@ class Gmail:
         try:
             with urlopen(request, timeout=20) as response:
                 return json.load(response)
-        except Exception as error:
-            raise RemoteError("Gmail authentication failed") from error
+        except HTTPError as error:
+            try:
+                response = json.load(error)
+                code = response.get("error", "unknown_error")
+                # Google error descriptions can contain request details; display only the error code.
+                if not isinstance(code, str) or not re.fullmatch(r"[a-z_]+", code):
+                    code = "unknown_error"
+            except (ValueError, AttributeError):
+                code = "unknown_error"
+            raise RemoteError(f"Google token exchange failed: {code} (HTTP {error.code})") from error
+        except (URLError, TimeoutError) as error:
+            raise RemoteError(f"Google token exchange unavailable: {type(error).__name__}") from error
 
     def _token(self) -> str:
+        if not secrets.get("gmail_refresh_token"):
+            raise ValueError("Gmail is not connected")
         if self._access_token and time.monotonic() < self._expires_at:
             return self._access_token
         refresh = secrets.get("gmail_refresh_token")
         if not refresh:
             raise ValueError("Gmail is not connected")
+        client_secret = secrets.get("gmail_client_secret")
+        if not client_secret:
+            raise ValueError("Set the Gmail OAuth client secret in Integrations first")
         token = self._token_request({"client_id": self.settings.gmail_client_id,
-                                     "client_secret": secrets.get("gmail_client_secret"),
+                                     "client_secret": client_secret,
                                      "refresh_token": refresh, "grant_type": "refresh_token"})
         self._access_token = token["access_token"]
         self._expires_at = time.monotonic() + int(token.get("expires_in", 3600)) - 60
@@ -249,20 +299,31 @@ class Gmail:
         return request_json(url, headers={"Authorization": "Bearer " + self._token()})
 
     def scan(self, explain_event=None) -> dict:
+        generation = self._generation
         checkpoint = self.store.get_state("gmail_last_scan")
         since = max(int(checkpoint) - 300, int(time.time()) - 7 * 86400) if checkpoint else int(time.time()) - 7 * 86400
         page_token = ""
         count = alerts = 0
+        finding_ids: list[str] = []
         max_date = int(checkpoint or 0)
         while count < 500:
+            if generation != self._generation:
+                return {"status": "cancelled", "messages": count, "alerts": alerts,
+                        "finding_ids": finding_ids}
             params = {"q": f"after:{since}", "maxResults": min(100, 500 - count)}
             if page_token:
                 params["pageToken"] = page_token
             page = self._get("/messages", params)
             for summary in page.get("messages", []):
+                if generation != self._generation:
+                    return {"status": "cancelled", "messages": count, "alerts": alerts,
+                            "finding_ids": finding_ids}
                 if self.store.is_message_processed(summary["id"]):
                     continue
                 message = self._get("/messages/" + summary["id"], {"format": "full"})
+                if generation != self._generation:
+                    return {"status": "cancelled", "messages": count, "alerts": alerts,
+                            "finding_ids": finding_ids}
                 count += 1
                 max_date = max(max_date, int(message.get("internalDate", "0")) // 1000)
                 finding = inspect_message(message, self.reputation, self.settings.max_message_bytes)
@@ -272,13 +333,15 @@ class Gmail:
                                                  decision.risk, decision.verdict, finding["evidence"],
                                                  source_key="gmail:" + summary["id"])
                     alerts += 1
+                    finding_ids.append(event["id"])
                     if explain_event and not event["explanation"]:
                         explain_event(event)
                 self.store.mark_message_processed(summary["id"])
             page_token = page.get("nextPageToken", "")
             if not page_token:
                 break
-        if not page_token:
+        if not page_token and generation == self._generation:
             self.store.set_state("gmail_last_scan", str(max(max_date, int(time.time()) - 300)))
         self.store.audit("gmail_scan", "schedule_or_user", "success", {"messages": count, "alerts": alerts})
-        return {"messages": count, "alerts": alerts, "truncated": bool(page_token)}
+        return {"status": "completed", "messages": count, "alerts": alerts,
+                "finding_ids": finding_ids, "truncated": bool(page_token)}

@@ -1,14 +1,17 @@
 import io
 import json
 import tempfile
+import threading
+import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 from urllib.error import HTTPError
 
 from blueguard.assistant import parse_request
 from blueguard.config import Settings
-from blueguard.models import chat_assistant
+from blueguard.models import chat_assistant, suggest_assistant_prompts
 from blueguard.policy import decide
 from blueguard.service import Agent
 from blueguard.virustotal import VirusTotal, public_domain
@@ -145,6 +148,58 @@ class VirusTotalTests(unittest.TestCase):
 
 
 class AssistantTests(unittest.TestCase):
+    def test_suggestion_rpc_returns_generated_prompts(self):
+        agent = Agent.__new__(Agent)
+        agent.settings = Settings(model_provider="ollama", model_name="test-model")
+        agent.gmail = type("GmailStatus", (), {"status": lambda self: {"connected": True}})()
+        agent._assistant_pool = ThreadPoolExecutor(max_workers=1)
+        agent._assistant_lock = threading.Lock()
+        agent._assistant_jobs = {}
+        prompts = ["How do I check a sender?", "What should I review in Alerts?", "How do I inspect a downloaded file?"]
+        try:
+            with patch("blueguard.service.suggest_assistant_prompts", return_value=(prompts, "ollama:test-model")):
+                started = agent.dispatch("assistant_suggestions", {"previous": []})
+                result = agent.dispatch("assistant_reply", {"reply_id": started["reply_id"]})
+                if result["status"] == "pending":
+                    time.sleep(0.02)
+                    result = agent.dispatch("assistant_reply", {"reply_id": started["reply_id"]})
+            self.assertEqual(result["status"], "ready")
+            self.assertEqual(result["suggestions"], prompts)
+        finally:
+            agent._assistant_pool.shutdown(wait=True)
+
+    def test_local_model_generates_fresh_suggestions(self):
+        settings = Settings(model_provider="ollama", model_name="test-model")
+        first = '{"suggestions":["Check my Gmail for suspicious messages", "How should I inspect a strange link?", "What should I do with an unexpected attachment?"]}'
+        second = '{"suggestions":["Review my latest email alerts", "How can I verify a sender?", "What should I check before opening a download?"]}'
+        with patch("blueguard.models.request_json", side_effect=[
+                {"message": {"content": first}}, {"message": {"content": second}}]) as remote:
+            suggestions, model = suggest_assistant_prompts(settings, ["Check my Gmail for suspicious messages"], True)
+        self.assertEqual(suggestions[0], "Review my latest email alerts")
+        self.assertEqual(model, "ollama:test-model")
+        self.assertIn("suggestions", remote.call_args.kwargs["body"]["format"]["properties"])
+        settings.model_provider = "openai"
+        with self.assertRaisesRegex(ValueError, "local model"):
+            suggest_assistant_prompts(settings, [], True)
+
+    def test_suggestions_reject_gmail_controls_bluely_cannot_manage(self):
+        settings = Settings(model_provider="ollama", model_name="test-model")
+        unsupported = '{"suggestions":["How do I enable Gmail automatic scanning?", "How do I check a sender?", "What is in my Alerts tab?"]}'
+        supported = '{"suggestions":["Can Bluely check my email for suspicious messages?", "How should I inspect a strange attachment?", "What should I review before opening a download?"]}'
+        with patch("blueguard.models.request_json", side_effect=[
+                {"message": {"content": unsupported}}, {"message": {"content": supported}}]):
+            suggestions, _ = suggest_assistant_prompts(settings, [], True)
+        self.assertEqual(suggestions[0], "Can Bluely check my email for suspicious messages?")
+
+    def test_suggestions_reject_invented_targets(self):
+        settings = Settings(model_provider="ollama", model_name="test-model")
+        invented = '{"suggestions":["Check if this URL is safe: [URL]", "Scan the file at C:\\\\Users\\\\Example\\\\report.pdf", "Check my Gmail"]}'
+        supported = '{"suggestions":["Can you check a URL I provide?", "Can you scan a file I choose?", "Can you check my Gmail for suspicious messages?"]}'
+        with patch("blueguard.models.request_json", side_effect=[
+                {"message": {"content": invented}}, {"message": {"content": supported}}]):
+            suggestions, _ = suggest_assistant_prompts(settings, [], True)
+        self.assertEqual(suggestions[0], "Can you check a URL I provide?")
+
     def test_investigation_reply_requires_further_action(self):
         settings = Settings()
         settings.model_provider = "ollama"
@@ -155,6 +210,19 @@ class AssistantTests(unittest.TestCase):
             with self.assertRaises(Exception):
                 from blueguard.models import draft_assistant_note
                 draft_assistant_note(settings, "virustotal_file", "malicious", payload)
+
+    def test_suspicious_url_follow_up_uses_connected_model(self):
+        from blueguard.models import draft_assistant_note
+        settings = Settings(model_provider="ollama", model_name="test-model")
+        response = '{"reply":"Safe Browsing had no match. VirusTotal reported suspicious detections. Further action: Do not open the URL; review the alert and verify its destination independently."}'
+        result = {"status": "suspicious", "kind": "url", "malicious": 0,
+                  "suspicious": 2, "safe_browsing_status": "no_match",
+                  "virustotal_status": "suspicious"}
+        with patch("blueguard.models.request_json", return_value={"message": {"content": response}}) as model:
+            note, used = draft_assistant_note(settings, "url", "suspicious", result)
+        self.assertIn("VirusTotal reported suspicious detections", note)
+        self.assertEqual(used, "ollama:test-model")
+        self.assertEqual(model.call_count, 1)
 
     def test_local_model_receives_thread_and_cloud_general_chat_stays_local(self):
         settings = Settings()

@@ -64,13 +64,14 @@ class PolicyTests(unittest.TestCase):
                 self.assertIn("credential_request", sent)
 
     def test_ollama_response_is_bounded_and_nonempty(self):
-        with patch("blueguard.models.request_json", return_value={"message": {"content": "Connected"}}) as remote:
+        with patch("blueguard.models.request_json", return_value={"message": {"content": '{"reply":"Connected"}'}}) as remote:
             answer, used = explain(Settings(model_provider="ollama", model_name="qwen3:4b"),
                                    "connection_test", 0, "low", [], "Model test")
         self.assertEqual(answer, "Connected")
         self.assertEqual(used, "ollama:qwen3:4b")
         self.assertEqual(remote.call_args.kwargs["body"]["think"], False)
-        self.assertEqual(remote.call_args.kwargs["body"]["options"]["num_predict"], 256)
+        self.assertIn("format", remote.call_args.kwargs["body"])
+        self.assertEqual(remote.call_args.kwargs["body"]["options"]["num_predict"], 180)
         with patch("blueguard.models.request_json", return_value={"message": {"content": ""}}):
             with self.assertRaises(RemoteError):
                 explain(Settings(model_provider="ollama", model_name="qwen3:4b"),
