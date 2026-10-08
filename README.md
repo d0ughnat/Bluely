@@ -16,10 +16,10 @@ The Chromium extension observes downloads **after completion**. It cannot guaran
 
 ## Install on Windows 10/11 x64
 
-Once the Windows release is published, open **PowerShell** and run this one line. It downloads the installer with `curl.exe`, checks it, requests administrator approval, installs Bluely, and opens the app:
+Open **PowerShell** and run this one line. It downloads the setup executable directly, asks for administrator approval, installs Bluely, and opens the app. It does not run a PowerShell script, so script execution policy does not block it:
 
 ```powershell
-curl.exe -fL https://raw.githubusercontent.com/d0ughnat/Bluely/main/packaging/windows/install.ps1 -o "$env:TEMP\bluely-install.ps1"; if ($LASTEXITCODE -ne 0) { throw 'Bluely installer download failed' }; & "$env:TEMP\bluely-install.ps1"
+curl.exe -fL https://github.com/d0ughnat/Bluely/releases/latest/download/Bluely-Setup-x64.exe -o "$env:TEMP\Bluely-Setup-x64.exe"; if ($LASTEXITCODE -ne 0) { throw 'Bluely download failed' }; Start-Process -FilePath "$env:TEMP\Bluely-Setup-x64.exe" -Verb RunAs -Wait; if (Test-Path "$env:ProgramFiles\Bluely\Bluely.exe") { Start-Process "$env:ProgramFiles\Bluely\Bluely.exe" }
 ```
 
 The installer requires administrator approval to register the Defender scan broker. Windows may show an unsigned-app warning until a code-signing certificate is available. The agent starts with Bluely and at future sign-ins. Data and settings live under `%LOCALAPPDATA%\Bluely`; secrets use Windows Credential Manager. Microsoft Defender must be enabled for file scan verdicts. YARA is optional.
