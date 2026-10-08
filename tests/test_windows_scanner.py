@@ -47,7 +47,7 @@ class WindowsScannerTests(unittest.TestCase):
             snapshot = scan_root / "scan-1/sample.bin"
             snapshot.parent.mkdir(parents=True)
             snapshot.write_bytes(b"fixture")
-            self.assertEqual(_validated_snapshot(str(snapshot), scan_root), snapshot)
+            self.assertEqual(_validated_snapshot(str(snapshot), scan_root), snapshot.resolve())
             outside = root / "other.bin"
             outside.write_bytes(b"fixture")
             with self.assertRaisesRegex(ValueError, "outside"):

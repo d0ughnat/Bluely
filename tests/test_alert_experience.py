@@ -16,15 +16,17 @@ class AlertExperienceTests(unittest.TestCase):
     def test_viewing_alerts_clears_badge_without_closing_findings(self):
         with tempfile.TemporaryDirectory() as temp:
             store = Store(Path(temp) / "alerts.sqlite3")
-            first = store.add_event("email", "first", 50, "suspicious", [])
-            self.assertEqual(store.unread_alert_count(), 1)
-            self.assertEqual(store.mark_alerts_seen(first["created_at"]), 0)
-            self.assertEqual(store.get_event(first["id"])["status"], "open")
-            self.assertEqual(store.unread_alert_count(), 0)
-            second = store.add_event("email", "second", 60, "suspicious", [])
-            self.assertEqual(store.unread_alert_count(), 1)
-            self.assertEqual(store.mark_alerts_seen(second["created_at"]), 0)
-            store.close()
+            try:
+                first = store.add_event("email", "first", 50, "suspicious", [])
+                self.assertEqual(store.unread_alert_count(), 1)
+                self.assertEqual(store.mark_alerts_seen(first["created_at"]), 0)
+                self.assertEqual(store.get_event(first["id"])["status"], "open")
+                self.assertEqual(store.unread_alert_count(), 0)
+                second = store.add_event("email", "second", 60, "suspicious", [])
+                self.assertEqual(store.unread_alert_count(), 1)
+                self.assertEqual(store.mark_alerts_seen(second["created_at"]), 0)
+            finally:
+                store.close()
             reopened = Store(Path(temp) / "alerts.sqlite3")
             self.assertEqual(reopened.unread_alert_count(), 0)
             reopened.close()

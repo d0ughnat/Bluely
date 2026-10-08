@@ -116,8 +116,11 @@ class Store:
     def unread_alert_count(self) -> int:
         seen_through = self.get_state("alerts_seen_through") or ""
         with self._lock:
-            row = self.db.execute("SELECT COUNT(*) FROM events WHERE risk >= 30 AND status = 'open' "
-                                  "AND created_at > ?", (seen_through,)).fetchone()
+            if seen_through:
+                row = self.db.execute("SELECT COUNT(*) FROM events WHERE risk >= 30 AND status = 'open' "
+                                      "AND created_at > ?", (seen_through,)).fetchone()
+            else:
+                row = self.db.execute("SELECT COUNT(*) FROM events WHERE risk >= 30 AND status = 'open'").fetchone()
         return int(row[0])
 
     def mark_alerts_seen(self, through: str) -> int:
