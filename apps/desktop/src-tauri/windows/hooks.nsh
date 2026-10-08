@@ -5,7 +5,7 @@
 
 !macro NSIS_HOOK_POSTINSTALL
   ; The broker can only scan; it runs as SYSTEM so Defender is available to every signed-in user.
-  nsExec::ExecToLog 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\resources\install-broker.ps1" -BrokerPath "$INSTDIR\bluely-defender-broker.exe"'
+  nsExec::ExecToLog 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\resources\install-broker.ps1" -BrokerPath "$INSTDIR\resources\broker\bluely-defender-broker.exe"'
   Pop $0
   ${If} $0 != 0
     MessageBox MB_ICONEXCLAMATION|MB_OK "Bluely installed, but its Defender scanner could not be registered. File scans will show Defender unavailable."

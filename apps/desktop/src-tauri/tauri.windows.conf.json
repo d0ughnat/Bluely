@@ -3,13 +3,11 @@
     "targets": ["nsis"],
     "resources": {
       "../../browser-extension/": "browser-extension/",
-      "windows/install-broker.ps1": "install-broker.ps1"
+      "windows/install-broker.ps1": "install-broker.ps1",
+      "windows-runtime/agent/": "agent/",
+      "windows-runtime/native-host/": "native-host/",
+      "windows-runtime/broker/": "broker/"
     },
-    "externalBin": [
-      "binaries/bluely-agent",
-      "binaries/bluely-native-host",
-      "binaries/bluely-defender-broker"
-    ],
     "windows": {
       "nsis": {
         "installMode": "perMachine",

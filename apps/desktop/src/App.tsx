@@ -392,7 +392,9 @@ export default function App() {
         {tab === "assistant" && <button className="icon-button" title="Reset chat" aria-label="Reset chat" disabled={!messages.length && !chatInput && !chatBusy} onClick={resetChat}><RotateCcw size={18} /></button>}
         <button className="icon-button" title="Refresh data" aria-label="Refresh data" onClick={refresh}><RefreshCw size={18} /></button></div></header>
       {notice && <div className="notice" role="status"><span>{notice}</span><button title="Dismiss notification" aria-label="Dismiss notification" onClick={() => setNotice("")}>×</button></div>}
-      {!agent && <div className="offline-banner"><AlertTriangle size={18} /><div><strong>Agent is not running</strong><span>Start the local service with <code>bluely setup</code>, then refresh.</span></div></div>}
+      {!agent && <div className="offline-banner"><AlertTriangle size={18} /><div><strong>Agent is not running</strong><span>{navigator.userAgent.includes("Windows") ? "Reopen Bluely or install the latest Windows setup, then refresh. Your saved settings are kept." : <>Start the local service with <code>bluely setup</code>, then refresh.</>}</span></div></div>}
+
+      {(tab === "models" || tab === "settings") && !settings && <div className="page narrow"><Empty icon={AlertTriangle} title={`${tab === "models" ? "Models" : "Integrations"} unavailable`} detail="Bluely cannot load these settings until its local agent starts." /></div>}
 
       {tab === "overview" && <div className="page">
         <div className="section-head"><div><h2>This device</h2></div><span className="muted">Updated {new Date().toLocaleTimeString()}</span></div>

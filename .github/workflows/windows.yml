@@ -38,8 +38,10 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e . pyinstaller
+          python -m pip install -e . "pyinstaller>=6.10,<7"
           npm ci --prefix apps/desktop
+      - name: Verify runner SQLite
+        run: python packaging/windows/verify_sqlite.py --source
       - name: Python tests
         run: python -m unittest discover -s tests -v
         env:
@@ -47,18 +49,36 @@ jobs:
       - name: Build Python programs
         shell: pwsh
         run: |
-          pyinstaller --noconfirm --clean --onefile --noconsole --name bluely-agent --paths agent --collect-data blueguard --collect-submodules keyring.backends packaging/windows/agent_entry.py
-          pyinstaller --noconfirm --clean --onefile --console --name bluely-native-host --paths agent --collect-data blueguard --collect-submodules keyring.backends packaging/windows/native_host_entry.py
-          pyinstaller --noconfirm --clean --onefile --noconsole --name bluely-defender-broker --paths agent --collect-data blueguard packaging/windows/broker_entry.py
-          New-Item -ItemType Directory -Force apps/desktop/src-tauri/binaries | Out-Null
-          Copy-Item dist/bluely-agent.exe apps/desktop/src-tauri/binaries/bluely-agent-x86_64-pc-windows-msvc.exe
-          Copy-Item dist/bluely-native-host.exe apps/desktop/src-tauri/binaries/bluely-native-host-x86_64-pc-windows-msvc.exe
-          Copy-Item dist/bluely-defender-broker.exe apps/desktop/src-tauri/binaries/bluely-defender-broker-x86_64-pc-windows-msvc.exe
+          python -m PyInstaller --noconfirm --clean --onedir --noconsole --name bluely-agent --paths agent --hidden-import _sqlite3 --collect-data blueguard --collect-submodules keyring.backends packaging/windows/agent_entry.py
+          python -m PyInstaller --noconfirm --clean --onedir --console --name bluely-native-host --paths agent --hidden-import _sqlite3 --collect-data blueguard --collect-submodules keyring.backends packaging/windows/native_host_entry.py
+          python -m PyInstaller --noconfirm --clean --onedir --noconsole --name bluely-defender-broker --paths agent --collect-data blueguard packaging/windows/broker_entry.py
+          python -m PyInstaller --noconfirm --clean --onefile --noconsole --name bluely-agent-onefile --paths agent --hidden-import _sqlite3 --collect-data blueguard --collect-submodules keyring.backends packaging/windows/agent_entry.py
+      - name: Verify frozen SQLite and native libraries
+        run: python packaging/windows/verify_sqlite.py --agent-folder dist/bluely-agent --native-host-folder dist/bluely-native-host --onefile dist/bluely-agent-onefile.exe
       - name: Smoke test packaged agent and browser host
         run: python packaging/windows/smoke.py dist
+      - name: Stage Windows runtime for Tauri
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force apps/desktop/src-tauri/windows-runtime/agent | Out-Null
+          New-Item -ItemType Directory -Force apps/desktop/src-tauri/windows-runtime/native-host | Out-Null
+          New-Item -ItemType Directory -Force apps/desktop/src-tauri/windows-runtime/broker | Out-Null
+          Copy-Item dist/bluely-agent/* apps/desktop/src-tauri/windows-runtime/agent -Recurse -Force
+          Copy-Item dist/bluely-native-host/* apps/desktop/src-tauri/windows-runtime/native-host -Recurse -Force
+          Copy-Item dist/bluely-defender-broker/* apps/desktop/src-tauri/windows-runtime/broker -Recurse -Force
       - name: Build installer
         working-directory: apps/desktop
         run: npm run tauri build -- --config src-tauri/tauri.windows.conf.json
+      - name: Install setup and verify installed agent
+        shell: pwsh
+        run: |
+          $bundle = Get-ChildItem apps/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          if (-not $bundle) { throw 'NSIS installer was not produced' }
+          $install = Start-Process -FilePath $bundle.FullName -ArgumentList '/S' -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "Silent installation failed: $($install.ExitCode)" }
+          $resources = Join-Path $env:ProgramFiles 'Bluely/resources'
+          python packaging/windows/verify_sqlite.py --agent-folder "$resources/agent" --native-host-folder "$resources/native-host"
+          python packaging/windows/smoke.py $resources
       - uses: actions/upload-artifact@v4
         with:
           name: Bluely-Windows-x64-unsigned

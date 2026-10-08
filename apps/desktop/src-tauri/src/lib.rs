@@ -140,7 +140,9 @@ mod tests {
 pub fn run() {
     #[cfg(windows)]
     if let Ok(executable) = std::env::current_exe() {
-        let agent = executable.with_file_name("bluely-agent.exe");
+        let agent = executable.with_file_name("resources")
+            .join("agent")
+            .join("bluely-agent.exe");
         if agent.is_file() {
             use std::os::windows::process::CommandExt;
             let _ = Command::new(agent).arg("setup").creation_flags(0x08000000).status();

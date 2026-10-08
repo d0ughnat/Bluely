@@ -68,12 +68,21 @@ def setup_windows(extension_id: str) -> None:
                           r"Software\Microsoft\Windows\CurrentVersion\Run") as key:
         winreg.SetValueEx(key, "BluelyAgent", 0, winreg.REG_SZ, agent_command)
     _say("Bluely agent registered to start at sign-in")
+    manifest = DATA_DIR / "native-host.json"
+    if not extension_id and manifest.is_file():
+        try:
+            origins = json.loads(manifest.read_text(encoding="utf-8")).get("allowed_origins", [])
+            match = re.fullmatch(r"chrome-extension://([a-p]{32})/", origins[0]) if origins else None
+            extension_id = match.group(1) if match else ""
+        except (OSError, ValueError, TypeError, IndexError):
+            extension_id = ""
     if extension_id:
         DATA_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
-        host = executable.with_name("bluely-native-host.exe")
+        host = (executable.parent.parent / "native-host/bluely-native-host.exe"
+                if executable.parent.name.lower() == "agent" else
+                executable.with_name("bluely-native-host.exe"))
         if not host.exists():
             raise FileNotFoundError("Bluely native messaging host is not installed")
-        manifest = DATA_DIR / "native-host.json"
         manifest.write_text(json.dumps({"name": "com.blueguard.agent",
                                         "description": "Bluely local security agent",
                                         "path": str(host), "type": "stdio",
