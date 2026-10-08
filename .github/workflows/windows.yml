@@ -69,16 +69,23 @@ jobs:
       - name: Build installer
         working-directory: apps/desktop
         run: npm run tauri build -- --config src-tauri/tauri.windows.conf.json
-      - name: Install setup and verify installed agent
+      - name: Verify agent inside NSIS setup
         shell: pwsh
         run: |
           $bundle = Get-ChildItem apps/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
           if (-not $bundle) { throw 'NSIS installer was not produced' }
-          $install = Start-Process -FilePath $bundle.FullName -ArgumentList '/S' -Wait -PassThru
-          if ($install.ExitCode -ne 0) { throw "Silent installation failed: $($install.ExitCode)" }
-          $resources = Join-Path $env:ProgramFiles 'Bluely/resources'
-          python packaging/windows/verify_sqlite.py --agent-folder "$resources/agent" --native-host-folder "$resources/native-host"
-          python packaging/windows/smoke.py $resources
+          $extract = Join-Path $env:RUNNER_TEMP 'bluely-nsis-payload'
+          New-Item -ItemType Directory -Force $extract | Out-Null
+          $sevenZip = (Get-Command 7z.exe -ErrorAction Stop).Source
+          & $sevenZip x $bundle.FullName "-o$extract" -y | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'Could not extract NSIS setup payload' }
+          $resources = Get-ChildItem $extract -Directory -Recurse | Where-Object {
+            (Test-Path (Join-Path $_.FullName 'agent/bluely-agent.exe')) -and
+            (Test-Path (Join-Path $_.FullName 'native-host/bluely-native-host.exe'))
+          } | Select-Object -First 1
+          if (-not $resources) { throw 'NSIS setup is missing the packaged agent or native host' }
+          python packaging/windows/verify_sqlite.py --agent-folder "$($resources.FullName)/agent" --native-host-folder "$($resources.FullName)/native-host"
+          python packaging/windows/smoke.py $resources.FullName
       - uses: actions/upload-artifact@v4
         with:
           name: Bluely-Windows-x64-unsigned
