@@ -77,20 +77,25 @@ jobs:
           $extract = Join-Path $env:RUNNER_TEMP 'bluely-nsis-payload'
           New-Item -ItemType Directory -Force $extract | Out-Null
           $sevenZip = (Get-Command 7z.exe -ErrorAction Stop).Source
+          & $sevenZip l $bundle.FullName | Select-String 'bluely-agent|native-host|_sqlite3|sqlite3.dll' | Select-Object -First 40
           & $sevenZip x $bundle.FullName "-o$extract" -y | Out-Null
           if ($LASTEXITCODE -ne 0) { throw 'Could not extract NSIS setup payload' }
           $resources = Get-ChildItem $extract -Directory -Recurse | Where-Object {
             (Test-Path (Join-Path $_.FullName 'agent/bluely-agent.exe')) -and
             (Test-Path (Join-Path $_.FullName 'native-host/bluely-native-host.exe'))
           } | Select-Object -First 1
-          if (-not $resources) { throw 'NSIS setup is missing the packaged agent or native host' }
+          if (-not $resources) {
+            Get-ChildItem $extract -File -Recurse | Where-Object { $_.Name -match 'bluely-agent|native-host|_sqlite3|sqlite3.dll' } | Select-Object -First 40 -ExpandProperty FullName
+            throw 'NSIS setup resource paths differ from the expected agent/native-host layout'
+          }
           python packaging/windows/verify_sqlite.py --agent-folder "$($resources.FullName)/agent" --native-host-folder "$($resources.FullName)/native-host"
           python packaging/windows/smoke.py $resources.FullName
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: Bluely-Windows-x64-unsigned
           path: apps/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
-          if-no-files-found: error
+          if-no-files-found: warn
       - name: Publish curl-installable Windows release
         if: github.ref == 'refs/heads/main'
         shell: pwsh
